@@ -37,7 +37,7 @@ function findMatchingRule(title, startTime) {
 
 function ruleMatchesTitle(rule, title) {
   if (rule.type === 'exact') {
-    return title === rule.value;
+    return title.trim() === rule.value.trim();
   }
   if (rule.type === 'regex') {
     return rule.value.test(title);
