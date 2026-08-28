@@ -19,5 +19,8 @@ const CONFIG = {
         // { type: 'exact', value: 'Team Standup' },
         // { type: 'regex', value: /^sprint planning/i },
         // { type: 'regex', value: /roadmap.*review/ },
-    ]
+    ],
+
+    // Set lookahead window to avoid fetching infinitely recurring events.
+    lookaheadDays: 180, // Include events up to N days in future
 };
