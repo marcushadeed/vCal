@@ -14,11 +14,14 @@ const CONFIG = {
     ],
 
     // Filter rules: an event title must match at least one rule to be mirrored
-    // Rules can be exact strings or regex patterns
+    // Each rule can filter by title and optionally by time
+    // time.start and time.end are in 24-hour format (HH:MM) and optional
+    // Only events with start times within the time window match
     rules: [
         // { type: 'exact', value: 'Team Standup' },
+        // { type: 'exact', value: 'Team Standup', time: { start: '09:00', end: '10:00' } }, // Only 9-10am instances
         // { type: 'regex', value: /^sprint planning/i },
-        // { type: 'regex', value: /roadmap.*review/ },
+        // { type: 'regex', value: /roadmap.*review/, time: { start: '14:00', end: '15:30' } },
     ],
 
     // Set lookahead window to avoid fetching infinitely recurring events.

@@ -22,7 +22,7 @@ This allows testing against sample titles without touching CalendarApp or runnin
 ### Dry Run Mode
 Implement a module-level constant `DRY_RUN = true` at the top of the main script. When true:
 - Log intended deletes with event title, date, and original calendar source
-- Log intended creates with title, date, time, and which source it came from
+- Log intended creates with title, start time, date, and which source it came from. Include the matching rule (title and time window if applicable).
 - **Do not actually delete or create events**
 
 Default to `true`. The user will review the log, then set it to `false` and re-run after confirming the behavior is correct.
@@ -33,6 +33,18 @@ The mirror calendar receives **copies** of source events, not links. When creati
 1. **Do NOT copy guest lists or attendees.** This will cause Google to send calendar invites to those people every day, forever. Copy only title, time, location, and description.
 2. **Explicitly set reminders to empty** (`event.removeAllReminders()`). If the source event has reminders and you copy them, the user will get double notifications for events they're already invited to.
 3. **Recurring events become individual instances.** `getEvents()` returns expanded events, so a recurring meeting in the source becomes 100+ individual copies in the mirror. This is correct for the use case (filter by title, not structure), but document it.
+
+### Time-Based Filtering
+When an event title has multiple instances per week, use time-based filters to mirror only the instance(s) you plan to attend:
+
+1. **Time rules in config.js** — Each title rule can have an optional `time` property specifying allowed time windows:
+   ```javascript
+   { type: 'exact', value: 'Team Standup', time: { start: '09:00', end: '10:00' } }
+   { type: 'regex', value: /Roadmap/, time: { start: '14:00', end: '15:30' } }
+   ```
+2. **Time format** — 24-hour HH:MM format. Times are evaluated against the event's start time in the user's calendar timezone.
+3. **Logic** — An event matches a title rule AND (if time is specified) its start time falls within the time window.
+4. **Overlap handling** — If an event matches multiple rules (even with different time windows), it is created only once in the mirror.
 
 ### Reconciliation Strategy
 **Wipe-and-rebuild is safe** given the constraints (500 events, daily run, ~5,000 write quota/day):
@@ -75,7 +87,11 @@ The mirror is blank until the next scheduled run if the script crashes mid-delet
 `config.js` (created by user from `config.example.js`) contains:
 - `mirrorCalendarId`: Target calendar ID
 - `sourceCalendars`: Array of `{ id, name }` objects
-- `rules`: Array of `{ type: 'exact' | 'regex', value: string | RegExp }`
+- `rules`: Array of filter rule objects with:
+  - `type`: `'exact'` (string match) or `'regex'` (pattern match)
+  - `value`: String or RegExp to match against event title
+  - `time` (optional): Time window object with `start` and `end` in 24-hour format (HH:MM). Only events with start times within this window match the rule.
+- `lookaheadDays`: Number of days to look ahead (default 180) to avoid fetching infinitely recurring events
 
 This file is **not tracked in git** (it's in `.gitignore`), but **is pushed to Apps Script** (not in `.claspignore`). User secrets stay local; script logic is version-controlled.
 
