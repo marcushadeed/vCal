@@ -13,28 +13,36 @@ const CONFIG = {
         // { id: 'SOURCE_CALENDAR_ID_2@group.calendar.google.com', name: 'Source Calendar 2' },
     ],
 
-    // Filter rules: an event title must match at least one rule to be mirrored.
+    // Filter rules: a BLACKLIST. Every event from every source calendar is
+    // mirrored UNLESS it matches at least one rule below — rules describe
+    // events to EXCLUDE, not include. An empty array (the default) excludes
+    // nothing, so everything gets mirrored.
+    //
     // Each rule requires a title matcher (type + value) and can optionally add
-    // day-of-week and/or time-of-day constraints, to select specific instances
-    // out of a title that recurs multiple times a week.
+    // day-of-week and/or time-of-day constraints, to exclude specific instances
+    // out of a title that recurs multiple times a week (leaving the other
+    // instances of that title to be mirrored as normal).
     //
     //   type:  'exact' (string equality) or 'regex' (RegExp.test)
     //   value: string (for 'exact') or RegExp (for 'regex')
     //   days:  optional array of day codes, any of
     //          ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].
-    //          If present, the event's start day must be one of these.
+    //          If present, only instances starting on one of these days are
+    //          excluded by this rule.
     //   time:  optional { start: 'HH:MM', end: 'HH:MM' }, 24-hour format,
-    //          evaluated against the event's start time. If present, the
-    //          start time must fall within [start, end).
+    //          evaluated against the event's start time. If present, only
+    //          instances with a start time within [start, end) are excluded
+    //          by this rule.
     //
-    // A rule with no days/time matches every instance of that title, on any
-    // day at any time. An event is mirrored if it matches AT LEAST ONE rule.
+    // A rule with no days/time excludes every instance of that title, on any
+    // day at any time. An event is excluded from the mirror if it matches AT
+    // LEAST ONE rule.
     rules: [
-        // { type: 'exact', value: 'All-Hands Meeting' }, // every instance, any day/time
-        // { type: 'exact', value: 'Team Standup', time: { start: '09:00', end: '10:00' } }, // only 9-10am instances, any day
-        // { type: 'exact', value: 'Team Standup', days: ['MO', 'WE', 'FR'] }, // only Mon/Wed/Fri instances, any time
-        // { type: 'exact', value: 'Sprint Planning', days: ['TU'], time: { start: '14:00', end: '15:30' } }, // only the Tuesday 2-3:30pm instance
-        // { type: 'regex', value: /roadmap.*review/i },
+        // { type: 'exact', value: 'Personal - Doctor Appointment' }, // never mirror any instance
+        // { type: 'exact', value: 'Team Standup', time: { start: '09:00', end: '10:00' } }, // exclude only the 9-10am instances, mirror the rest
+        // { type: 'exact', value: 'Team Standup', days: ['MO', 'WE', 'FR'] }, // exclude only Mon/Wed/Fri instances, mirror the rest
+        // { type: 'exact', value: 'Sprint Planning', days: ['TU'], time: { start: '14:00', end: '15:30' } }, // exclude only the Tuesday 2-3:30pm instance
+        // { type: 'regex', value: /confidential/i },
     ],
 
     // Set lookahead window to avoid fetching infinitely recurring events.

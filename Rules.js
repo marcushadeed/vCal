@@ -1,6 +1,11 @@
 // Pure title/time filter logic. No CalendarApp calls here — this file must
 // be testable by calling matchesRules() directly with plain values.
 //
+// CONFIG.rules is a BLACKLIST: an event is mirrored unless it matches one
+// of these rules. matchesRules() returns true when the title (and, if the
+// rule specifies them, day/time) matches a rule, meaning the event should
+// be EXCLUDED from the mirror — not included.
+//
 // The only external state this depends on is CONFIG.rules (see
 // config.example.js for the rule shape). Everything else is a function of
 // its arguments.
@@ -16,8 +21,9 @@ function matchesRules(title, startTime) {
 }
 
 // Returns the first rule in CONFIG.rules that matches, or null. Used only
-// for dry-run/creation logging (CLAUDE.md wants the matching rule named in
-// the log), so it isn't part of the pure matchesRules() contract itself.
+// for dry-run/exclusion logging (CLAUDE.md wants the matching exclusion
+// rule named in the log), so it isn't part of the pure matchesRules()
+// contract itself.
 function findMatchingRule(title, startTime) {
   var rules = CONFIG.rules;
   for (var i = 0; i < rules.length; i++) {

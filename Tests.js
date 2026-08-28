@@ -2,6 +2,11 @@
 // it's safe and fast to run from the Apps Script editor before enabling
 // the schedule trigger.
 //
+// Rules are a BLACKLIST: matchesRules() returning true means the title/time
+// matched an exclusion rule and should be filtered OUT of the mirror.
+// `expected: true` below means "this event is excluded"; `expected: false`
+// means "this event is mirrored" (the default for anything not matched).
+//
 // PLACEHOLDER FIXTURES: TEST_RULES and TEST_CASES below use made-up titles
 // and times. Replace them with real titles (and real recurrence times)
 // from your source calendars before trusting these results.
@@ -14,37 +19,37 @@ var TEST_RULES = [
 
 var TEST_CASES = [
   {
-    description: 'exact match, no day/time constraint',
+    description: 'exact match, no day/time constraint -> excluded',
     title: 'All-Hands Meeting',
     startTime: new Date(2026, 0, 6, 15, 0), // Tue Jan 6 2026, 3:00pm
     expected: true,
   },
   {
-    description: 'regex match',
+    description: 'regex match -> excluded',
     title: 'Sprint Planning - Q3 Kickoff',
     startTime: new Date(2026, 0, 6, 11, 0), // Tue Jan 6 2026, 11:00am
     expected: true,
   },
   {
-    description: 'no rule matches',
+    description: 'no rule matches -> mirrored by default',
     title: 'Random 1:1 with Manager',
     startTime: new Date(2026, 0, 7, 10, 0), // Wed Jan 7 2026, 10:00am
     expected: false,
   },
   {
-    description: 'day+time constrained rule: matching instance (Mon 9:30am)',
+    description: 'day+time constrained rule: matching instance (Mon 9:30am) -> excluded',
     title: 'Team Standup',
     startTime: new Date(2026, 0, 5, 9, 30), // Mon Jan 5 2026, 9:30am
     expected: true,
   },
   {
-    description: 'day+time constrained rule: sibling instance on wrong day (Wed 9:30am)',
+    description: 'day+time constrained rule: sibling instance on wrong day (Wed 9:30am) -> mirrored',
     title: 'Team Standup',
     startTime: new Date(2026, 0, 7, 9, 30), // Wed Jan 7 2026, 9:30am
     expected: false,
   },
   {
-    description: 'day+time constrained rule: sibling instance on right day, wrong time (Mon 2:00pm)',
+    description: 'day+time constrained rule: sibling instance on right day, wrong time (Mon 2:00pm) -> mirrored',
     title: 'Team Standup',
     startTime: new Date(2026, 0, 5, 14, 0), // Mon Jan 5 2026, 2:00pm
     expected: false,

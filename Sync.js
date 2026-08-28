@@ -26,20 +26,26 @@ function mirrorCalendarSync() {
 
   // Build the full replacement list in memory before writing anything, so a
   // mid-run crash never leaves the mirror half-deleted (see CLAUDE.md).
-  var matches = collectMatchingEvents(windowStart, windowEnd);
+  var partitioned = collectEvents(windowStart, windowEnd);
+  var included = partitioned.included;
 
   if (DRY_RUN) {
-    logDryRun(matches, mirrorCalendar, windowStart, windowEnd);
+    logDryRun(partitioned, mirrorCalendar, windowStart, windowEnd);
     return;
   }
 
   deleteExistingMirroredEvents(mirrorCalendar, windowStart, windowEnd);
-  createMirroredEvents(mirrorCalendar, matches);
-  Logger.log('mirrorCalendarSync: created ' + matches.length + ' event(s).');
+  createMirroredEvents(mirrorCalendar, included);
+  Logger.log('mirrorCalendarSync: created ' + included.length + ' event(s).');
 }
 
-function collectMatchingEvents(windowStart, windowEnd) {
-  var matches = [];
+// Splits every source event in the window into `included` (mirrored — did
+// not match any blacklist rule) and `excluded` (filtered out — matched a
+// blacklist rule). Rules are a blacklist: an event is mirrored by default
+// unless CONFIG.rules says otherwise (see CLAUDE.md).
+function collectEvents(windowStart, windowEnd) {
+  var included = [];
+  var excluded = [];
   CONFIG.sourceCalendars.forEach(function (source) {
     var calendar = CalendarApp.getCalendarById(source.id);
     if (!calendar) {
@@ -53,18 +59,26 @@ function collectMatchingEvents(windowStart, windowEnd) {
       var title = event.getTitle();
       var startTime = event.getStartTime();
       if (matchesRules(title, startTime)) {
-        matches.push({
+        excluded.push({
           event: event,
           sourceName: source.name,
           rule: findMatchingRule(title, startTime),
         });
+      } else {
+        included.push({
+          event: event,
+          sourceName: source.name,
+        });
       }
     });
   });
-  return matches;
+  return { included: included, excluded: excluded };
 }
 
-function logDryRun(matches, mirrorCalendar, windowStart, windowEnd) {
+function logDryRun(partitioned, mirrorCalendar, windowStart, windowEnd) {
+  var included = partitioned.included;
+  var excluded = partitioned.excluded;
+
   Logger.log('=== DRY RUN: mirrorCalendarSync (no changes made) ===');
   Logger.log('Window: ' + windowStart + ' through ' + windowEnd);
 
@@ -75,11 +89,19 @@ function logDryRun(matches, mirrorCalendar, windowStart, windowEnd) {
     Logger.log('  DELETE "' + event.getTitle() + '" on ' + event.getStartTime() + ' (source: ' + source + ')');
   });
 
-  Logger.log('Intended creates: ' + matches.length);
-  matches.forEach(function (match) {
+  Logger.log('Intended excludes (blacklisted): ' + excluded.length);
+  excluded.forEach(function (match) {
+    Logger.log(
+      '  EXCLUDE "' + match.event.getTitle() + '" at ' + match.event.getStartTime() +
+      ' (source: ' + match.sourceName + ', rule: ' + describeRule(match.rule) + ')'
+    );
+  });
+
+  Logger.log('Intended creates: ' + included.length);
+  included.forEach(function (match) {
     Logger.log(
       '  CREATE "' + match.event.getTitle() + '" at ' + match.event.getStartTime() +
-      ' (source: ' + match.sourceName + ', rule: ' + describeRule(match.rule) + ')'
+      ' (source: ' + match.sourceName + ')'
     );
   });
 
@@ -110,8 +132,8 @@ function deleteExistingMirroredEvents(mirrorCalendar, windowStart, windowEnd) {
   });
 }
 
-function createMirroredEvents(mirrorCalendar, matches) {
-  matches.forEach(function (match) {
+function createMirroredEvents(mirrorCalendar, included) {
+  included.forEach(function (match) {
     var source = match.event;
     var options = {
       location: source.getLocation(),
