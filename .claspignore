@@ -4,3 +4,4 @@ node_modules/**
 .gitignore
 package.json
 package-lock.json
+config.example.js
