@@ -1,9 +1,9 @@
 # Purpose
 
-This exists for two purposes:
+This exists for multiple purposes:
 
 1. Gather multiple shared calendars into one single, editable calendar
-2. Automatically filter events in your personal calendar to reduce clutter
+2. Automatically filter events copied into that mirror calendar, to reduce clutter
 3. Filter + re-run functionality allows for some syncing with source calenders
 
 # Steps to run:
@@ -41,17 +41,19 @@ Before pushing the code to Google Scripts, you must configure your calendar sour
 
 ## Pushing to Google Scripts via CLASP
 
-1. Log in to CLASP with the Google account that should have the mirror calendar by following the instructions
+1. Enable the Apps Script API for your account: go to [script.google.com/home/usersettings](https://script.google.com/home/usersettings) and turn on "Google Apps Script API". CLASP will fail on `create`/`push` with a "User has not enabled the Apps Script API" error if you skip this.
+
+2. Log in to CLASP with the Google account that should have the mirror calendar by following the instructions
 ```
 clasp login
 ```
 
-2. Create a new Google Scripts project with the title `vCal` (or whatever you want it to be)
+3. Create a new Google Scripts project with the title `vCal` (or whatever you want it to be)
 ```
 clasp create --title vCal
 ```
 
-3. Check your CLASP setup by running
+4. Check your CLASP setup by running
 
 ```
 clasp status
@@ -67,7 +69,7 @@ Tracked files:
 └─ Sync.js
 ```
 
-4. Push to CLASP
+5. Push to CLASP
 ```
 clasp push
 ```
@@ -80,8 +82,12 @@ clasp push
 
 3. Navigate to `Sync.gs`, ensure that `DRY_RUN` is set to `true`, select `mirrorCalendarSync`as the function to run, and run it. Check that the output is what you want.
 
+4. To see the logged output of either run, open the `Executions` tab (clock-with-arrow icon in the left sidebar) and click into the most recent execution, or use `View > Logs` (Ctrl+Enter) from the editor immediately after a run.
+
 ## Running in Google Scripts
 
-1. Set `DRY_RUN` to `false`, and run
+1. Set `DRY_RUN` to `false` in `Sync.gs`, then run `mirrorCalendarSync` again.
 
-> Scheduled deployment instructions here
+2. Check the mirror calendar itself to confirm the events created match what the dry run predicted.
+
+3. Add a time-driven trigger so the sync runs automatically: in the Apps Script editor, open the `Triggers` tab (clock icon in the left sidebar) → `+ Add Trigger` → set "Choose which function to run" to `mirrorCalendarSync`, "Select event source" to `Time-driven`, and pick a `Day timer` (a daily run is what the wipe-and-rebuild reconciliation strategy is designed around — see `CLAUDE.md`) at whatever time of day works for you, then `Save`.
