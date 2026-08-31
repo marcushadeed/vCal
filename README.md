@@ -66,8 +66,14 @@ Before pushing the code to Apps Script, configure your calendar sources and filt
   ```
 6. Push to Apps Script:
   ```
-   clasp push
+   clasp push --force
   ```
+   `--force` is required. A plain `clasp push` uploads the `.js` files but will not overwrite the remote `appsscript.json`, so the advanced Calendar service you enabled in step 4 never reaches the project. The push reports success either way — the only symptom is `ReferenceError: Calendar is not defined` later, at the first `Calendar.Events` call.
+7. Confirm the manifest actually landed:
+  ```
+   clasp pull
+  ```
+   Re-open `appsscript.json` and check that `dependencies` still contains the `Calendar` entry from step 4. If it came back empty, the manifest did not push.
 
 ## 4. Test in Apps Script
 
