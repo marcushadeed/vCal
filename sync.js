@@ -24,6 +24,16 @@ var SOURCE_TAG_KEY = 'gcalDiffSourceCalendar';
 var SYNC_KEY = 'gcalDiffSyncKey';
 var SIGNATURE_KEY = 'gcalDiffSignature';
 
+// The only values Google Calendar accepts in an event's `colorId`. These are
+// the 11 per-event colours, which are a different set from the 24 calendar
+// colours — an id outside this list is rejected by the API, which would fail
+// every write in the run, so a configured colour is checked against it once
+// per source calendar rather than trusted blindly.
+//
+//   1 Lavender   2 Sage      3 Grape     4 Flamingo   5 Banana   6 Tangerine
+//   7 Peacock    8 Graphite  9 Blueberry 10 Basil    11 Tomato
+var VALID_EVENT_COLOR_IDS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'];
+
 // Joins fields before hashing. ASCII 31 (unit separator) is a control
 // character that cannot appear in a calendar title, location or description,
 // so it keeps adjacent fields from running together — without a separator, a
@@ -76,6 +86,14 @@ function collectEvents(windowStart, windowEnd) {
       Logger.log('WARNING: could not find source calendar "' + source.name + '" (' + source.id + '); skipping.');
       return;
     }
+    // Checked here, once per calendar rather than once per event, so a typo in
+    // the config surfaces as one log line instead of failing every write.
+    if (source.color && !isValidEventColorId(source.color)) {
+      Logger.log(
+        'WARNING: source calendar "' + source.name + '" has color "' + source.color +
+        '", which is not one of ' + VALID_EVENT_COLOR_IDS.join('/') + '; ignoring it.'
+      );
+    }
     // getEvents() expands recurring events into individual instances, so a
     // weekly meeting becomes one entry per occurrence in this window.
     var events = calendar.getEvents(windowStart, windowEnd);
@@ -93,6 +111,7 @@ function collectEvents(windowStart, windowEnd) {
           event: event,
           sourceCalendarId: source.id,
           sourceName: source.name,
+          sourceColor: source.color,
         });
       }
     });
@@ -111,7 +130,10 @@ function buildDesiredEvents(included) {
       match.event.getStartTime()
     );
 
-    var resource = buildEventResource(match.event);
+    // The colour is resolved inside buildEventResource(), i.e. BEFORE the
+    // signature is computed from the finished resource. Setting it afterwards
+    // would leave a colour change invisible to the diff.
+    var resource = buildEventResource(match.event, match.sourceColor);
     var signature = computeSignature(resource, match.event.getLastUpdated());
 
     resource.extendedProperties = {
@@ -131,6 +153,7 @@ function buildDesiredEvents(included) {
       sourceName: match.sourceName,
       title: match.event.getTitle(),
       startTime: match.event.getStartTime(),
+      colorId: resource.colorId || '',
     };
   });
   return desired;
@@ -142,7 +165,7 @@ function buildDesiredEvents(included) {
 // and reminders are always cleared (gotcha #2). Setting reminders here
 // rather than with a follow-up removeAllReminders() call keeps this to a
 // single write per event.
-function buildEventResource(source) {
+function buildEventResource(source, sourceColor) {
   var resource = {
     summary: source.getTitle(),
     location: source.getLocation() || '',
@@ -155,9 +178,11 @@ function buildEventResource(source) {
     // Google would send invitations to them on every run, forever.
   };
 
-  // getColor() returns '' when the event uses the calendar's default colour;
-  // the API rejects an empty colorId, so only set it when there is one.
-  var color = source.getColor();
+  // getColor() returns '' when the event uses the calendar's default colour,
+  // in which case the source calendar's configured colour is used so that the
+  // mirror still shows which calendar the event came from. The API rejects an
+  // empty colorId, so only set it when there is one.
+  var color = resolveColorId(source.getColor(), sourceColor);
   if (color) {
     resource.colorId = color;
   }
@@ -180,6 +205,35 @@ function buildEventResource(source) {
   }
 
   return resource;
+}
+
+// Decides which colour a mirrored event carries. The source event's own
+// colour override wins when it has one, so per-event colour coding in the
+// source survives the copy; otherwise the event takes its source calendar's
+// configured colour, which is what makes sources distinguishable in the
+// mirror. Returns '' for "leave unset" — the API rejects an empty colorId, so
+// the caller omits the field entirely in that case.
+//
+// Pure, and separate from buildEventResource() for exactly that reason:
+// buildEventResource() calls CalendarApp getters and cannot be unit-tested,
+// this can.
+function resolveColorId(eventColor, sourceColor) {
+  if (isValidEventColorId(eventColor)) {
+    return String(eventColor);
+  }
+  if (isValidEventColorId(sourceColor)) {
+    return String(sourceColor);
+  }
+  return '';
+}
+
+// Accepts a string or a number, since a config written as `color: 5` is an
+// easy mistake and means the same thing as '5'.
+function isValidEventColorId(color) {
+  if (color === null || color === undefined || color === '') {
+    return false;
+  }
+  return VALID_EVENT_COLOR_IDS.indexOf(String(color)) !== -1;
 }
 
 // CalendarApp's Visibility enum uses upper-case names; the API expects
@@ -223,6 +277,7 @@ function fetchMirrorIndex(windowStart, windowEnd) {
         sourceName: privateProps[SOURCE_TAG_KEY] || 'unknown',
         title: item.summary,
         start: (item.start && (item.start.dateTime || item.start.date)) || 'unknown',
+        colorId: item.colorId || '',
       };
       if (syncKey) {
         tracked[syncKey] = entry;
@@ -285,14 +340,19 @@ function logDryRun(plan, excluded, windowStart, windowEnd) {
 
   Logger.log('Intended creates: ' + plan.creates.length);
   plan.creates.forEach(function (item) {
-    Logger.log('  CREATE "' + item.title + '" at ' + item.startTime + ' (source: ' + item.sourceName + ')');
+    Logger.log(
+      '  CREATE "' + item.title + '" at ' + item.startTime +
+      ' (source: ' + item.sourceName + ', colour: ' + describeColor(item.colorId) + ')'
+    );
   });
 
   Logger.log('Intended updates: ' + plan.updates.length);
   plan.updates.forEach(function (item) {
     Logger.log(
       '  UPDATE "' + item.desired.title + '" at ' + item.desired.startTime +
-      ' (source: ' + item.desired.sourceName + ', was "' + item.previous.title + '" at ' + item.previous.start + ')'
+      ' (source: ' + item.desired.sourceName + ', colour: ' + describeColor(item.desired.colorId) +
+      ', was "' + item.previous.title + '" at ' + item.previous.start +
+      ' colour ' + describeColor(item.previous.colorId) + ')'
     );
   });
 
@@ -313,6 +373,22 @@ function logDryRun(plan, excluded, windowStart, windowEnd) {
   });
 
   Logger.log('=== END DRY RUN ===');
+}
+
+// Names the event colours in dry-run output, so a colour-only update reads as
+// "Banana -> Basil" rather than "5 -> 10".
+var EVENT_COLOR_NAMES = {
+  '1': 'Lavender', '2': 'Sage', '3': 'Grape', '4': 'Flamingo',
+  '5': 'Banana', '6': 'Tangerine', '7': 'Peacock', '8': 'Graphite',
+  '9': 'Blueberry', '10': 'Basil', '11': 'Tomato',
+};
+
+function describeColor(colorId) {
+  if (!colorId) {
+    return 'calendar default';
+  }
+  var name = EVENT_COLOR_NAMES[String(colorId)];
+  return name ? name + ' (' + colorId + ')' : String(colorId);
 }
 
 function describeRule(rule) {

@@ -59,7 +59,8 @@ var TEST_CASES = [
 function runTests() {
   var results = testMatchesRules()
     .concat(testComputeSyncKey())
-    .concat(testComputeSignature());
+    .concat(testComputeSignature())
+    .concat(testResolveColorId());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -210,6 +211,73 @@ function testComputeSignature() {
       expected: shouldMatch ? 'same signature' : 'different signature',
       actual: matched ? 'same signature' : 'different signature',
       passed: matched === shouldMatch,
+    };
+  });
+}
+
+// resolveColorId() is the pure half of the colour handling; the CalendarApp
+// getters that feed it live in buildEventResource(), which cannot be tested
+// here. '' means "leave colorId unset", i.e. the mirror calendar's default.
+function testResolveColorId() {
+  var cases = [
+    {
+      description: 'colour: the source event\'s own colour wins over the calendar colour',
+      eventColor: '7',
+      sourceColor: '9',
+      expected: '7',
+    },
+    {
+      description: 'colour: an event on the calendar default takes the source calendar\'s colour',
+      eventColor: '',
+      sourceColor: '9',
+      expected: '9',
+    },
+    {
+      description: 'colour: an event colour with no configured calendar colour is kept',
+      eventColor: '7',
+      sourceColor: undefined,
+      expected: '7',
+    },
+    {
+      description: 'colour: neither set leaves the colour unset',
+      eventColor: '',
+      sourceColor: undefined,
+      expected: '',
+    },
+    {
+      description: 'colour: an out-of-range calendar colour is ignored, event colour still applies',
+      eventColor: '7',
+      sourceColor: '12',
+      expected: '7',
+    },
+    {
+      description: 'colour: an out-of-range calendar colour with no event colour leaves it unset',
+      eventColor: '',
+      sourceColor: '0',
+      expected: '',
+    },
+    {
+      description: 'colour: a non-numeric calendar colour is ignored',
+      eventColor: '',
+      sourceColor: 'blue',
+      expected: '',
+    },
+    {
+      // `color: 5` in config is an easy slip and means the same as '5'.
+      description: 'colour: a numeric calendar colour is normalised to a string',
+      eventColor: '',
+      sourceColor: 10,
+      expected: '10',
+    },
+  ];
+
+  return cases.map(function (testCase) {
+    var actual = resolveColorId(testCase.eventColor, testCase.sourceColor);
+    return {
+      description: testCase.description,
+      expected: testCase.expected === '' ? '(unset)' : testCase.expected,
+      actual: actual === '' ? '(unset)' : actual,
+      passed: actual === testCase.expected,
     };
   });
 }

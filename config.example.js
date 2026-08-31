@@ -7,10 +7,24 @@ const CONFIG = {
     mirrorCalendarId: 'YOUR_MIRROR_CALENDAR_ID@group.calendar.google.com',
 
     // Source calendars to filter from
-    // Each entry is { id, name } where id comes from the source calendar's settings
+    // Each entry is { id, name, color? } where id comes from the source
+    // calendar's settings and name is a label of your choosing.
+    //
+    //   color: optional event-colour id, as a string. Every event mirrored
+    //          from this calendar is given this colour, so you can still tell
+    //          sources apart in the mirror. A source event that has its OWN
+    //          colour override keeps that colour instead. Omit to leave events
+    //          in the mirror calendar's default colour.
+    //
+    // The 11 colour ids Google Calendar accepts (these are the per-event
+    // colours, not the calendar colours):
+    //
+    //   '1' Lavender   '2' Sage      '3' Grape      '4' Flamingo
+    //   '5' Banana     '6' Tangerine '7' Peacock    '8' Graphite
+    //   '9' Blueberry  '10' Basil    '11' Tomato
     sourceCalendars: [
-        // { id: 'SOURCE_CALENDAR_ID_1@group.calendar.google.com', name: 'Source Calendar 1' },
-        // { id: 'SOURCE_CALENDAR_ID_2@group.calendar.google.com', name: 'Source Calendar 2' },
+        // { id: 'SOURCE_CALENDAR_ID_1@group.calendar.google.com', name: 'Source Calendar 1', color: '9' },
+        // { id: 'SOURCE_CALENDAR_ID_2@group.calendar.google.com', name: 'Source Calendar 2', color: '6' },
     ],
 
     // Filter rules: a BLACKLIST. Every event from every source calendar is

@@ -28,7 +28,7 @@ Before pushing the code to Apps Script, configure your calendar sources and filt
 2. [Create a new Google Calendar](https://calendar.google.com/calendar/u/0/r/settings/createcalendar). This will be your mirror calendar.
 3. Get the mirror calendar's ID: open the hamburger menu (three lines, top left) in Google Calendar → find the mirror calendar under **My calendars** → hover over it and click the three dots → **Settings and sharing** → copy the **Calendar ID** under **Integrate calendar**. It will look like `abc123@group.calendar.google.com`.
 4. Paste that ID as the value of `mirrorCalendarId` in `config.js`.
-5. Add your source calendars under `sourceCalendars`, one JSON object per calendar. Set `id` to the calendar's ID and `name` to a label of your choosing.
+5. Add your source calendars under `sourceCalendars`, one JSON object per calendar. Set `id` to the calendar's ID and `name` to a label of your choosing. Optionally set `color` to an event-colour id (`'1'`–`'11'`, listed in the `config.example.js` comments) to give every event from that calendar the same colour in the mirror, so you can still tell sources apart at a glance.
 6. Add your filters under `rules`, following the instructions in the `config.example.js` comments.
 
 ## 3. Push to Apps Script via CLASP

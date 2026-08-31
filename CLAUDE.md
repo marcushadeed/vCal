@@ -58,8 +58,8 @@ The first run after a large config change (or the first run on an empty mirror) 
 ### Dry Run Mode
 A module-level constant `DRY_RUN = true` at the top of `sync.js`. When true, log the plan and make **no writes**:
 - A one-line summary: counts of creates, updates, deletes, unchanged, and rule-excluded.
-- Intended **creates** with title, start time, and source calendar.
-- Intended **updates** with title, start time, source, and what the mirrored copy currently says.
+- Intended **creates** with title, start time, source calendar, and resolved colour.
+- Intended **updates** with title, start time, source, resolved colour, and what the mirrored copy currently says (including its current colour).
 - Intended **deletes** with title, date, source, and why (no longer in source, vs. untracked).
 - Intended **excludes** (source events filtered out by a blacklist rule) with title, start time, source, and the matching rule.
 
@@ -72,6 +72,7 @@ The mirror calendar receives **copies** of source events, not links. Mirrored ev
 2. **Explicitly set reminders to empty** — `reminders: { useDefault: false, overrides: [] }` in the event resource. If the source event has reminders and you copy them, the user gets double notifications for events they're already invited to.
 3. **Recurring events become individual instances.** `getEvents()` returns expanded events, so a recurring meeting in the source becomes 100+ individual copies in the mirror. This is correct for the use case (filter by title, not structure), and is why the sync key must include the start time.
 4. **All-day events use `date`, not `dateTime`.** Both `getAllDayEndDate()` and the API's `end.date` are exclusive (midnight at the start of the day *after* the event ends), in the script's time zone, so they map across directly.
+5. **Colour identifies the source calendar.** `resolveColorId()` decides the mirrored event's `colorId`: the source event's own colour override wins when it has one, otherwise the event takes its source calendar's configured `color`, otherwise the field is left unset and the event inherits the mirror calendar's default. It must be resolved *inside* `buildEventResource()`, i.e. before `computeSignature()` runs on the finished resource — setting the colour afterwards would make a colour change invisible to the diff. Note that Google's per-event colours are ids `'1'`-`'11'`, a different set from the 24 calendar colours.
 
 ### Time-Based Filtering
 When an event title has multiple instances per week, use time-based filters to exclude only the specific instance(s) you don't want mirrored, leaving the rest of that title's instances to pass through by default:
@@ -87,9 +88,10 @@ When an event title has multiple instances per week, use time-based filters to e
 
 ## Testing
 
-`runTests()` runs **without touching CalendarApp**, so it's fast and safe to run from the Apps Script editor. It covers three pure functions:
+`runTests()` runs **without touching CalendarApp**, so it's fast and safe to run from the Apps Script editor. It covers four pure functions:
 
 - `matchesRules()` — blacklist filtering, including day- and time-constrained rules.
+- `resolveColorId()` — the event override / source-calendar colour precedence, and that out-of-range or non-string colour ids are ignored.
 - `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys.
 - `computeSignature()` — that a change to each mirrored field is detected, and that an edit to an unmirrored property is still caught via `lastUpdated`.
 
@@ -128,7 +130,7 @@ Events added to the mirror by hand have no sync key and will be deleted on the n
 
 `config.js` (created by user from `config.example.js`) contains:
 - `mirrorCalendarId`: Target calendar ID
-- `sourceCalendars`: Array of `{ id, name }` objects
+- `sourceCalendars`: Array of `{ id, name, color? }` objects. `color` is an optional event-colour id (`'1'`-`'11'`) applied to every event mirrored from that calendar, so sources stay distinguishable in the mirror. An id outside that range is ignored with a warning logged once per calendar; the API rejects invalid ids outright, which would otherwise fail every write in the run.
 - `rules`: Array of **exclusion** (blacklist) rule objects. An event is mirrored **unless** it matches at least one rule. Each rule has:
   - `type`: `'exact'` (string match) or `'regex'` (pattern match)
   - `value`: String or RegExp to match against event title
