@@ -42,7 +42,16 @@ Before pushing the code to Apps Script, configure your calendar sources and filt
   ```
    clasp create --title vCal
   ```
-4. Check your CLASP setup:
+4. Enable the advanced Calendar service. `clasp create` generates a fresh `appsscript.json`, and that file is gitignored, so this is not carried over by cloning — without it the sync fails with `Calendar is not defined`. Open `appsscript.json` and set `dependencies` to:
+  ```json
+  "dependencies": {
+    "enabledAdvancedServices": [
+      { "userSymbol": "Calendar", "serviceId": "calendar", "version": "v3" }
+    ]
+  },
+  ```
+   The existing `https://www.googleapis.com/auth/calendar` scope already covers it; no extra scope is needed.
+5. Check your CLASP setup:
   ```
    clasp status
   ```
@@ -50,12 +59,12 @@ Before pushing the code to Apps Script, configure your calendar sources and filt
   ```
   Tracked files:
   └─ appsscript.json
-  └─ Rules.js
   └─ config.js
-  └─ Sync.js
-  └─ Tests.js
+  └─ rules.js
+  └─ sync.js
+  └─ tests.js
   ```
-5. Push to Apps Script:
+6. Push to Apps Script:
   ```
    clasp push
   ```
@@ -69,7 +78,9 @@ Before pushing the code to Apps Script, configure your calendar sources and filt
 
 ## 5. Run for Real
 
-1. Set `DRY_RUN` to `false` in `Sync.gs`, then run `mirrorCalendarSync` again.
+1. Set `DRY_RUN` to `false` in `Sync.gs`, then run `mirrorCalendarSync` again. The script writes through the advanced Calendar service, so the first run prompts for authorization again — accept it.
 2. Check the mirror calendar itself to confirm the created events match what the dry run predicted.
-3. Add a time-driven trigger so the sync runs automatically: in the Apps Script editor, open the **Triggers** tab (clock icon in the left sidebar) → **+ Add Trigger** → set "Choose which function to run" to `mirrorCalendarSync`, "Select event source" to `Time-driven`, and pick a `Day timer` at whatever time of day works for you. A daily run is what the wipe-and-rebuild reconciliation strategy is designed around — see `CLAUDE.md`. Click **Save**.
+3. Add a time-driven trigger so the sync runs automatically: in the Apps Script editor, open the **Triggers** tab (clock icon in the left sidebar) → **+ Add Trigger** → set "Choose which function to run" to `mirrorCalendarSync`, "Select event source" to `Time-driven`, and pick a `Day timer` at whatever time of day works for you. Click **Save**.
+
+Reconciliation is incremental: each run compares the mirror against your source calendars and writes only what actually differs, so a day with no calendar changes writes nothing. Re-running is cheap and safe, and events edited in a source calendar are updated in the mirror automatically. See `CLAUDE.md` for details.
 

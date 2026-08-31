@@ -57,7 +57,9 @@ var TEST_CASES = [
 ];
 
 function runTests() {
-  var results = testMatchesRules();
+  var results = testMatchesRules()
+    .concat(testComputeSyncKey())
+    .concat(testComputeSignature());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -101,4 +103,113 @@ function testMatchesRules() {
     CONFIG.rules = originalRules;
   }
   return results;
+}
+
+// --- Identity and change detection ---------------------------------------
+//
+// computeSyncKey() and computeSignature() are pure, so they are testable
+// here without touching CalendarApp. These are the two functions incremental
+// reconciliation depends on: the key decides which mirrored event
+// corresponds to which source instance, and the signature decides whether
+// that event needs rewriting.
+
+var SAMPLE_CALENDAR_ID = 'source-a@group.calendar.google.com';
+var SAMPLE_ICAL_UID = 'abc123@google.com';
+
+var SAMPLE_RESOURCE = {
+  summary: 'Chemistry Lecture',
+  location: 'Chem 1407',
+  description: 'Bring the lab notebook',
+  start: { dateTime: '2026-09-01T14:00:00.000Z' },
+  end: { dateTime: '2026-09-01T15:00:00.000Z' },
+  colorId: '5',
+  visibility: 'private',
+};
+
+var SAMPLE_LAST_UPDATED = new Date(Date.UTC(2026, 7, 20, 12, 0, 0));
+
+function cloneResource(overrides) {
+  var copy = JSON.parse(JSON.stringify(SAMPLE_RESOURCE));
+  Object.keys(overrides || {}).forEach(function (key) {
+    copy[key] = overrides[key];
+  });
+  return copy;
+}
+
+function testComputeSyncKey() {
+  var baseline = computeSyncKey(SAMPLE_CALENDAR_ID, SAMPLE_ICAL_UID, new Date(Date.UTC(2026, 8, 1, 14, 0, 0)));
+  var cases = [
+    {
+      description: 'sync key: same inputs produce the same key',
+      actual: computeSyncKey(SAMPLE_CALENDAR_ID, SAMPLE_ICAL_UID, new Date(Date.UTC(2026, 8, 1, 14, 0, 0))),
+      shouldEqualBaseline: true,
+    },
+    {
+      // The critical one. Every occurrence of a recurring series shares a
+      // single iCalUID, so without the start time in the key all ~75
+      // meetings of a course would collapse onto one mirrored event.
+      description: 'sync key: same iCalUID at a different start time is a different key',
+      actual: computeSyncKey(SAMPLE_CALENDAR_ID, SAMPLE_ICAL_UID, new Date(Date.UTC(2026, 8, 8, 14, 0, 0))),
+      shouldEqualBaseline: false,
+    },
+    {
+      description: 'sync key: same event id on a different source calendar is a different key',
+      actual: computeSyncKey('source-b@group.calendar.google.com', SAMPLE_ICAL_UID, new Date(Date.UTC(2026, 8, 1, 14, 0, 0))),
+      shouldEqualBaseline: false,
+    },
+  ];
+
+  return cases.map(function (testCase) {
+    var matched = testCase.actual === baseline;
+    return {
+      description: testCase.description,
+      expected: testCase.shouldEqualBaseline ? 'same key' : 'different key',
+      actual: matched ? 'same key' : 'different key',
+      passed: matched === testCase.shouldEqualBaseline,
+    };
+  });
+}
+
+function testComputeSignature() {
+  var baseline = computeSignature(cloneResource(), SAMPLE_LAST_UPDATED);
+
+  var cases = [
+    {
+      description: 'signature: identical input produces an identical signature',
+      resource: cloneResource(),
+      lastUpdated: SAMPLE_LAST_UPDATED,
+      shouldEqualBaseline: true,
+    },
+    { description: 'signature: title change is detected', resource: cloneResource({ summary: 'Chemistry Lab' }) },
+    { description: 'signature: location change is detected', resource: cloneResource({ location: 'Chem 1402' }) },
+    { description: 'signature: description change is detected', resource: cloneResource({ description: 'Cancelled' }) },
+    { description: 'signature: start time change is detected', resource: cloneResource({ start: { dateTime: '2026-09-01T16:00:00.000Z' } }) },
+    { description: 'signature: end time change is detected', resource: cloneResource({ end: { dateTime: '2026-09-01T17:00:00.000Z' } }) },
+    { description: 'signature: colour change is detected', resource: cloneResource({ colorId: '7' }) },
+    { description: 'signature: visibility change is detected', resource: cloneResource({ visibility: 'public' }) },
+    {
+      description: 'signature: switching to an all-day event is detected',
+      resource: cloneResource({ start: { date: '2026-09-01' }, end: { date: '2026-09-02' } }),
+    },
+    {
+      // The catch-all layer: a source edit to a property this script never
+      // reads still has to force the mirrored copy to be rewritten.
+      description: 'signature: a source edit to an unmirrored property is still detected via lastUpdated',
+      resource: cloneResource(),
+      lastUpdated: new Date(Date.UTC(2026, 7, 21, 9, 30, 0)),
+    },
+  ];
+
+  return cases.map(function (testCase) {
+    var lastUpdated = testCase.lastUpdated || SAMPLE_LAST_UPDATED;
+    var actual = computeSignature(testCase.resource, lastUpdated);
+    var matched = actual === baseline;
+    var shouldMatch = testCase.shouldEqualBaseline === true;
+    return {
+      description: testCase.description,
+      expected: shouldMatch ? 'same signature' : 'different signature',
+      actual: matched ? 'same signature' : 'different signature',
+      passed: matched === shouldMatch,
+    };
+  });
 }
