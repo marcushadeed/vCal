@@ -19,6 +19,10 @@ This project serves multiple purposes:
    npm install
   ```
    If you don't have npm, follow the [install instructions](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm) and try again.
+3. Install CLASP, the command-line tool used to push the code to Apps Script:
+  ```
+   npm install -g @google/clasp
+  ```
 
 ## 2. Create the Config
 
