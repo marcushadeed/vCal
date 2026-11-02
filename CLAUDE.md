@@ -86,21 +86,34 @@ When an event title has multiple instances per week, use time-based filters to e
 3. **Logic** — An event matches a blacklist rule (and is excluded) when its title matches AND (if `days`/`time`/`date` are specified) its start day/time/date falls within those constraints. An event that matches no rule is mirrored by default.
 4. **Overlap handling** — If an event matches multiple exclusion rules, it is still excluded only once — exclusion is a boolean outcome, so no special de-duplication is needed.
 
+### Page-Made Blocks
+`index.html` and `webapp.js` are a web app for blocking events without editing `config.js`. `CONFIG` is fixed at push time, so blocks live in Script Properties (`blocks.js`). They are **ordinary rules**, in the same shape as `CONFIG.rules`, and `mirrorCalendarSync()` merges them in at the start of each run. `matchesRules()` and the dry-run log need no second code path, and the existing diff deletes blocked copies and recreates unblocked ones.
+
+1. **One property per block**, keyed `block:<md5 of the rule JSON>`. This avoids the 9KB-per-value limit and means two saves can't overwrite each other. Don't move them into a single shared value.
+2. **Two scopes.** `'title'` is an exact title rule. `'occurrence'` adds that event's date and a one-minute `time` window. Blocks match on title and start time, so a title block applies across all source calendars, and renaming an event or moving an occurrence breaks its block.
+3. **A title block on an empty title is refused**, because it would block every untitled event.
+4. **All-day starts must go through `parseEventStart()`.** `new Date('2026-12-25')` is UTC midnight, which is Dec 24 in New York.
+5. **The page reads events with `Calendar.Events.list`**, not `CalendarApp`, to keep page loads fast (see issue #7).
+6. **Event text is inserted with `textContent`, never `innerHTML`.** Anyone who can edit a shared calendar controls it.
+7. **A corrupt stored block throws**, failing both the sync and the page, so it can't silently change what gets mirrored. Expired occurrence blocks are deleted on page load.
+
 ## Testing
 
-`runTests()` runs **without touching CalendarApp**, so it's fast and safe to run from the Apps Script editor. It covers four pure functions:
+`runTests()` runs **without touching CalendarApp or Script Properties**, so it's fast and safe to run from the Apps Script editor. It covers these pure functions:
 
 - `matchesRules()` — blacklist filtering, including day-, time- and date-constrained rules.
 - `resolveColorId()` — the event override / source-calendar colour precedence, and that out-of-range or non-string colour ids are ignored.
 - `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys.
 - `computeSignature()` — that a change to each mirrored field is detected, and that an edit to an unmirrored property is still caught via `lastUpdated`.
+- `buildBlockRule()` — that an occurrence block matches only that occurrence, a title block matches every instance, and an empty title is refused. Rules are round-tripped through JSON first, as the store does.
+- `parseEventStart()`, `classifyEvent()`, `isBlockExpired()` and `describeBlock()` — the rest of the page's pure logic.
 
 Anything added to `computeSignature()` needs a corresponding case in `testComputeSignature()`; a field that is hashed but untested will silently stop triggering updates if it is ever dropped.
 
 ## Scheduled Trigger
 
 The entry point is `function mirrorCalendarSync()`. This function:
-1. Loads config (will fail helpfully if CONFIG is not defined — user will see the error immediately)
+1. Loads config (will fail helpfully if CONFIG is not defined — user will see the error immediately), and merges in blocks made from the web page
 2. Fetches events from all source calendars within the date window
 3. Filters out events matching a blacklist rule; everything else passes through
 4. Builds the desired state, reads the mirror's current state, and diffs them
@@ -141,7 +154,7 @@ Events added to the mirror by hand have no sync key and will be deleted on the n
 
 This file is **not tracked in git** (it's in `.gitignore`), but **is pushed to Apps Script** (not in `.claspignore`). User secrets stay local; script logic is version-controlled.
 
-`appsscript.json` enables the **advanced Calendar service** (`Calendar`, v3). The existing `.../auth/calendar` scope already covers it; no additional scope is needed. Re-authorization is required the first time the service is used.
+`appsscript.json` enables the **advanced Calendar service** (`Calendar`, v3). The existing `.../auth/calendar` scope already covers it; no additional scope is needed. Re-authorization is required the first time the service is used. It also holds the `webapp` block for the blocking page, which must stay `"executeAs": "USER_DEPLOYING", "access": "MYSELF"`: the page can change what gets mirrored, and reads every source calendar as the owner.
 
 ## Debugging
 

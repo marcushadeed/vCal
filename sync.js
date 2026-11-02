@@ -55,6 +55,10 @@ function mirrorCalendarSync() {
     );
   }
 
+  // Blocks made from the web page. Globals are fresh each execution, so this
+  // lasts only for this run.
+  CONFIG.rules = CONFIG.rules.concat(loadBlockRules());
+
   var startedAt = Date.now();
   logTiming('run start', startedAt);
 

@@ -132,7 +132,12 @@ function runTests() {
     .concat(testMalformedDateRules())
     .concat(testComputeSyncKey())
     .concat(testComputeSignature())
-    .concat(testResolveColorId());
+    .concat(testResolveColorId())
+    .concat(testBuildBlockRule())
+    .concat(testParseEventStart())
+    .concat(testClassifyEvent())
+    .concat(testIsBlockExpired())
+    .concat(testDescribeBlock());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -383,4 +388,151 @@ function testResolveColorId() {
       passed: actual === testCase.expected,
     };
   });
+}
+
+// --- Page-made blocks --------------------------------------------------------
+//
+// These cover only the pure half of blocks.js and webapp.js. The Script
+// Properties store is deliberately not touched here, so running the tests can
+// never alter real blocks.
+
+function blockResult(description, expected, actual) {
+  return { description: description, expected: expected, actual: actual, passed: actual === expected };
+}
+
+function throwsResult(description, fn) {
+  var threw = false;
+  try {
+    fn();
+  } catch (e) {
+    threw = true;
+  }
+  return blockResult(description, 'throws', threw ? 'throws' : 'no error');
+}
+
+function withRules(rules, fn) {
+  var originalRules = CONFIG.rules;
+  try {
+    CONFIG.rules = rules;
+    return fn();
+  } finally {
+    CONFIG.rules = originalRules;
+  }
+}
+
+// Round-trips the rule through JSON first, because that is what the store does
+// to it. A rule that only matched before serialising would pass otherwise.
+function storedRuleMatches(rule, title, startTime) {
+  return withRules([JSON.parse(JSON.stringify(rule))], function () {
+    return matchesRules(title, startTime);
+  });
+}
+
+function testBuildBlockRule() {
+  var lecture = new Date(2026, 10, 4, 10, 0); // Wed Nov 4 2026, 10:00am
+  var nextWeek = new Date(2026, 10, 11, 10, 0);
+  var sameDayLater = new Date(2026, 10, 4, 14, 0);
+  var oneMinuteLater = new Date(2026, 10, 4, 10, 1);
+  var occurrence = buildBlockRule('occurrence', 'Lecture', lecture);
+  var wholeTitle = buildBlockRule('title', 'Lecture', lecture);
+  var lateNight = new Date(2026, 10, 4, 23, 59);
+  var allDay = parseEventStart({ date: '2026-12-25' });
+
+  return [
+    blockResult('block: occurrence rule matches that occurrence', true,
+      storedRuleMatches(occurrence, 'Lecture', lecture)),
+    blockResult('block: occurrence rule does not match the same time on another day', false,
+      storedRuleMatches(occurrence, 'Lecture', nextWeek)),
+    blockResult('block: occurrence rule does not match another time that day', false,
+      storedRuleMatches(occurrence, 'Lecture', sameDayLater)),
+    blockResult('block: occurrence rule window ends after one minute', false,
+      storedRuleMatches(occurrence, 'Lecture', oneMinuteLater)),
+    blockResult('block: occurrence rule does not match another title', false,
+      storedRuleMatches(occurrence, 'Seminar', lecture)),
+    blockResult('block: title rule matches every instance', true,
+      storedRuleMatches(wholeTitle, 'Lecture', nextWeek)),
+    blockResult('block: title rule does not match another title', false,
+      storedRuleMatches(wholeTitle, 'Seminar', lecture)),
+    blockResult('block: 23:59 start is matched', true,
+      storedRuleMatches(buildBlockRule('occurrence', 'Late', lateNight), 'Late', lateNight)),
+    blockResult('block: all-day occurrence is matched', true,
+      storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', allDay)),
+    blockResult('block: all-day occurrence does not match the next day', false,
+      storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', new Date(2026, 11, 26))),
+    blockResult('block: untitled occurrence is allowed and matched', true,
+      storedRuleMatches(buildBlockRule('occurrence', '', lecture), '', lecture)),
+    throwsResult('block: title rule refuses an empty title', function () {
+      buildBlockRule('title', '', lecture);
+    }),
+    throwsResult('block: title rule refuses a whitespace-only title', function () {
+      buildBlockRule('title', '   ', lecture);
+    }),
+    throwsResult('block: an unknown scope is refused', function () {
+      buildBlockRule('series', 'Lecture', lecture);
+    }),
+  ];
+}
+
+function testParseEventStart() {
+  var allDay = parseEventStart({ date: '2026-12-25' });
+  var timed = parseEventStart({ dateTime: '2026-09-01T14:00:00.000Z' });
+  return [
+    // new Date('2026-12-25') would be UTC midnight, i.e. Dec 24 in New York.
+    blockResult('start: an all-day date stays on the same local day', '2026-12-25', formatDate(allDay)),
+    blockResult('start: an all-day date is local midnight', 0, allDay.getHours()),
+    blockResult('start: a timed start keeps its instant', Date.UTC(2026, 8, 1, 14, 0, 0), timed.getTime()),
+    throwsResult('start: a malformed all-day date is refused', function () {
+      parseEventStart({ date: '12/25/2026' });
+    }),
+    throwsResult('start: a malformed timed start is refused', function () {
+      parseEventStart({ dateTime: 'not a date' });
+    }),
+  ];
+}
+
+function testClassifyEvent() {
+  var start = new Date(2026, 10, 4, 10, 0);
+  var configRule = { type: 'exact', value: 'From Config' };
+  var pageRule = { type: 'exact', value: 'From Page' };
+  var bothRule = { type: 'exact', value: 'Both' };
+  return withRules([configRule, bothRule], function () {
+    var pageRules = [pageRule, bothRule];
+    return [
+      blockResult('classify: a config rule match is reported as config', 'config',
+        classifyEvent('From Config', start, pageRules)),
+      blockResult('classify: a page block match is reported as page', 'page',
+        classifyEvent('From Page', start, pageRules)),
+      // Only config can be named here, as unblocking wouldn't bring it back.
+      blockResult('classify: a match on both is reported as config', 'config',
+        classifyEvent('Both', start, pageRules)),
+      blockResult('classify: no match is reported as null', null,
+        classifyEvent('Neither', start, pageRules)),
+    ];
+  });
+}
+
+function testIsBlockExpired() {
+  var today = '2026-11-04';
+  var ending = function (end) {
+    return { type: 'exact', value: 'Lecture', date: { start: end, end: end } };
+  };
+  return [
+    blockResult('expiry: a block ending yesterday has expired', true, isBlockExpired(ending('2026-11-03'), today)),
+    blockResult('expiry: a block ending today has not', false, isBlockExpired(ending('2026-11-04'), today)),
+    blockResult('expiry: a block ending later has not', false, isBlockExpired(ending('2026-11-05'), today)),
+    blockResult('expiry: a title block never expires', false,
+      isBlockExpired({ type: 'exact', value: 'Lecture' }, today)),
+  ];
+}
+
+function testDescribeBlock() {
+  var start = new Date(2026, 10, 4, 10, 0);
+  return [
+    blockResult('describe: title block', 'All events titled "Lecture"',
+      describeBlock(buildBlockRule('title', 'Lecture', start))),
+    blockResult('describe: occurrence block', '"Lecture" on 2026-11-04 at 10:00',
+      describeBlock(buildBlockRule('occurrence', 'Lecture', start))),
+    blockResult('describe: untitled occurrence block', '(untitled) on 2026-11-04 at 10:00',
+      describeBlock(buildBlockRule('occurrence', '', start))),
+  ];
 }

@@ -63,10 +63,13 @@ Before pushing the code to Apps Script, configure your calendar sources and filt
   ```
   Tracked files:
   └─ appsscript.json
+  └─ blocks.js
   └─ config.js
+  └─ index.html
   └─ rules.js
   └─ sync.js
   └─ tests.js
+  └─ webapp.js
   ```
 6. Push to Apps Script:
   ```
@@ -93,4 +96,29 @@ Before pushing the code to Apps Script, configure your calendar sources and filt
 3. Add a time-driven trigger so the sync runs automatically: in the Apps Script editor, open the **Triggers** tab (clock icon in the left sidebar) → **+ Add Trigger** → set "Choose which function to run" to `mirrorCalendarSync`, "Select event source" to `Time-driven`, and pick a `Day timer` at whatever time of day works for you. Click **Save**.
 
 Reconciliation is incremental: each run compares the mirror against your source calendars and writes only what actually differs, so a day with no calendar changes writes nothing. Re-running is cheap and safe, and events edited in a source calendar are updated in the mirror automatically. See `CLAUDE.md` for details.
+
+## 6. Block Events from a Web Page (Optional)
+
+Instead of editing `config.js`, you can pick events to block from a page listing what's coming up.
+
+1. Add this to `appsscript.json`, so the page runs as you and only you can open it:
+  ```json
+  "webapp": { "executeAs": "USER_DEPLOYING", "access": "MYSELF" },
+  ```
+2. Push it (`--force` is required for manifest changes, as in section 3):
+  ```
+   clasp push --force
+  ```
+3. In the Apps Script editor, click **Deploy** → **New deployment** → select type **Web app** → **Deploy**, and accept any permission prompts.
+4. Open the **Web app** URL it gives you, and bookmark it.
+
+After any later `clasp push`, the page keeps serving the old code until you publish it: **Deploy** → **Manage deployments** → edit (pencil icon) → **Version: New version** → **Deploy**. The URL stays the same.
+
+Each event offers **Block this**, for that one occurrence, or **Block all titled this**. **Your blocks** lists what you've blocked, with an **Unblock** button for each. Changes apply at the next sync, and `DRY_RUN` still applies. Events excluded by `config.js` are labelled but can only be changed by editing that file.
+
+Blocks match on title and start time, which has a few consequences:
+
+- **Block all titled this** applies across all your source calendars.
+- Renaming a blocked event, or moving a blocked occurrence, breaks its block, so the event returns to the mirror.
+- **Block this** also blocks any other event with the same title starting in the same minute, on any source calendar.
 

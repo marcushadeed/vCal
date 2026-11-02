@@ -1,0 +1,255 @@
+<!doctype html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --text: #1f2328;
+      --muted: #656d76;
+      --line: #d8dee4;
+      --button: #f6f8fa;
+      --error-bg: #ffebe9;
+      --error-text: #82071e;
+      --warn-bg: #fff8c5;
+      --warn-text: #5c4400;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16191d;
+        --text: #e6e9ec;
+        --muted: #9aa4ae;
+        --line: #33393f;
+        --button: #23282d;
+        --error-bg: #4a1a1e;
+        --error-text: #ffc1c0;
+        --warn-bg: #3d3210;
+        --warn-text: #f0dc8c;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0 auto;
+      padding: 16px;
+      max-width: 800px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 system-ui, sans-serif;
+    }
+    header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 16px; }
+    h1 { margin: 0; font-size: 20px; }
+    h2 { margin: 24px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); font-size: 15px; }
+    h3 { margin: 16px 0 4px; color: var(--muted); font-size: 13px; }
+    button {
+      padding: 3px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--button);
+      color: inherit;
+      font: inherit;
+      font-size: 12px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    input {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--bg);
+      color: inherit;
+      font: inherit;
+    }
+    .muted { color: var(--muted); }
+    .notice { margin: 12px 0 0; padding: 8px 12px; border-radius: 4px; overflow-wrap: anywhere; }
+    .error { background: var(--error-bg); color: var(--error-text); }
+    .warning { background: var(--warn-bg); color: var(--warn-text); }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 0; }
+    .row .main { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+    .row .time { width: 52px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .row .actions { display: flex; flex-wrap: wrap; gap: 4px; }
+    .blocked .main { color: var(--muted); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>vCal blocks</h1>
+    <span class="muted">Changes apply at the next sync</span>
+  </header>
+
+  <div id="error" class="notice error" role="alert" hidden></div>
+  <div id="warnings"></div>
+
+  <h2>Your blocks</h2>
+  <div id="blocks" class="muted">Loading...</div>
+
+  <h2>Upcoming</h2>
+  <input id="search" type="search" placeholder="Search by title" aria-label="Search upcoming events by title">
+  <div id="events" class="muted">Loading...</div>
+
+  <script>
+    var data = null;
+    var busy = false;
+
+    var errorEl = document.getElementById('error');
+    var warningsEl = document.getElementById('warnings');
+    var blocksEl = document.getElementById('blocks');
+    var eventsEl = document.getElementById('events');
+    var searchEl = document.getElementById('search');
+
+    // All event text goes through textContent, never innerHTML, because anyone
+    // who can edit a shared calendar controls it.
+    function el(tag, className, text) {
+      var node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function button(label, onClick) {
+      var node = el('button', '', label);
+      node.type = 'button';
+      node.disabled = busy;
+      node.addEventListener('click', onClick);
+      return node;
+    }
+
+    function clear(node) {
+      node.className = '';
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    function showError(error) {
+      errorEl.textContent = (error && error.message) || String(error);
+      errorEl.hidden = false;
+    }
+
+    function formatDay(day) {
+      var parts = day.split('-');
+      return new Date(parts[0], parts[1] - 1, parts[2]).toLocaleDateString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+      });
+    }
+
+    function renderWarnings() {
+      clear(warningsEl);
+      data.warnings.forEach(function (warning) {
+        warningsEl.appendChild(el('div', 'notice warning', warning));
+      });
+    }
+
+    function renderBlocks() {
+      clear(blocksEl);
+      if (data.blocks.length === 0) {
+        blocksEl.className = 'muted';
+        blocksEl.textContent = 'Nothing blocked from this page yet.';
+        return;
+      }
+      data.blocks.forEach(function (block) {
+        var row = el('div', 'row');
+        row.appendChild(el('span', 'main', block.description));
+        row.appendChild(button('Unblock', function () {
+          act('unblock', [block.key]);
+        }));
+        blocksEl.appendChild(row);
+      });
+    }
+
+    function renderEventRow(event) {
+      var row = el('div', event.blockedBy ? 'row blocked' : 'row');
+      row.appendChild(el('span', 'time', event.allDay ? 'All day' : event.time));
+      row.appendChild(el('span', 'main', event.title || '(untitled)'));
+      row.appendChild(el('span', 'muted', event.sourceName));
+
+      if (event.blockedBy) {
+        row.appendChild(el('span', 'muted', event.blockedBy === 'page' ? 'blocked by you' : 'blocked by config.js'));
+        return row;
+      }
+
+      var actions = el('span', 'actions');
+      actions.appendChild(button('Block this', function () {
+        act('blockEvent', ['occurrence', event.title, event.start, event.allDay]);
+      }));
+      // A title block on an untitled event would block every untitled event.
+      if (event.title.trim() !== '') {
+        actions.appendChild(button('Block all titled this', function () {
+          act('blockEvent', ['title', event.title, event.start, event.allDay]);
+        }));
+      }
+      row.appendChild(actions);
+      return row;
+    }
+
+    function renderEvents() {
+      clear(eventsEl);
+      var query = searchEl.value.trim().toLowerCase();
+      var matches = data.events.filter(function (event) {
+        return event.title.toLowerCase().indexOf(query) !== -1;
+      });
+      if (matches.length === 0) {
+        eventsEl.className = 'muted';
+        eventsEl.textContent = query ? 'No events match your search.' : 'No upcoming events.';
+        return;
+      }
+      // Only days with a matching event get a heading.
+      var currentDay = null;
+      matches.forEach(function (event) {
+        if (event.day !== currentDay) {
+          currentDay = event.day;
+          eventsEl.appendChild(el('h3', '', formatDay(event.day)));
+        }
+        eventsEl.appendChild(renderEventRow(event));
+      });
+    }
+
+    function render() {
+      renderWarnings();
+      renderBlocks();
+      renderEvents();
+    }
+
+    function setBusy(value) {
+      busy = value;
+      if (data) render();
+    }
+
+    // Failures show the banner and leave the list as it was.
+    function callServer(name, args, onSuccess) {
+      var runner = google.script.run
+        .withSuccessHandler(onSuccess)
+        .withFailureHandler(function (error) {
+          showError(error);
+          if (!data) {
+            blocksEl.textContent = 'Could not load.';
+            eventsEl.textContent = 'Could not load.';
+          }
+          setBusy(false);
+        });
+      runner[name].apply(runner, args);
+    }
+
+    function refresh() {
+      callServer('getPageData', [], function (result) {
+        data = result;
+        setBusy(false);
+      });
+    }
+
+    // Every action reloads from the server, so there is only one code path.
+    function act(name, args) {
+      errorEl.hidden = true;
+      setBusy(true);
+      callServer(name, args, refresh);
+    }
+
+    searchEl.addEventListener('input', function () {
+      if (data) renderEvents();
+    });
+
+    refresh();
+  </script>
+</body>
+</html>
