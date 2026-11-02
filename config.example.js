@@ -47,16 +47,23 @@ const CONFIG = {
     //          evaluated against the event's start time. If present, only
     //          instances with a start time within [start, end) are excluded
     //          by this rule.
+    //   date:  optional { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD' }, both
+    //          inclusive, evaluated against the event's start date. If present,
+    //          only instances starting within the range are excluded by this
+    //          rule. For a single day, use the same start and end. A malformed
+    //          date fails the run.
     //
-    // A rule with no days/time excludes every instance of that title, on any
-    // day at any time. An event is excluded from the mirror if it matches AT
-    // LEAST ONE rule.
+    // A rule with no days/time/date excludes every instance of that title, on
+    // any day at any time. An event is excluded from the mirror if it matches
+    // AT LEAST ONE rule.
     rules: [
         // { type: 'exact', value: 'Personal - Doctor Appointment' }, // never mirror any instance
         // { type: 'exact', value: 'Team Standup', time: { start: '09:00', end: '10:00' } }, // exclude only the 9-10am instances, mirror the rest
         // { type: 'exact', value: 'Team Standup', days: ['MO', 'WE', 'FR'] }, // exclude only Mon/Wed/Fri instances, mirror the rest
         // { type: 'exact', value: 'Sprint Planning', days: ['TU'], time: { start: '14:00', end: '15:30' } }, // exclude only the Tuesday 2-3:30pm instance
         // { type: 'regex', value: /confidential/i },
+        // { type: 'exact', value: 'Team Standup', date: { start: '2026-12-21', end: '2027-01-01' } }, // exclude only instances in this range
+        // { type: 'regex', value: /.*/, date: { start: '2026-12-25', end: '2026-12-25' } }, // exclude ALL events on this date
     ],
 
     // Set lookahead window to avoid fetching infinitely recurring events.

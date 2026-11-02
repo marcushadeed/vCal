@@ -15,6 +15,11 @@ var TEST_RULES = [
   { type: 'exact', value: 'All-Hands Meeting' },
   { type: 'exact', value: 'Team Standup', days: ['MO'], time: { start: '09:00', end: '10:00' } },
   { type: 'regex', value: /^Sprint Planning/i },
+  { type: 'exact', value: 'Holiday Party', date: { start: '2026-12-24', end: '2026-12-26' } },
+  { type: 'exact', value: 'Fall Break', date: { start: '2026-09-25', end: '2026-10-05' } },
+  { type: 'exact', value: 'Winter Break', date: { start: '2026-12-20', end: '2027-01-05' } },
+  { type: 'exact', value: 'Team Sync', days: ['MO'], date: { start: '2026-08-01', end: '2026-08-31' } },
+  { type: 'regex', value: /.*/, date: { start: '2026-07-04', end: '2026-07-04' } },
 ];
 
 var TEST_CASES = [
@@ -54,10 +59,77 @@ var TEST_CASES = [
     startTime: new Date(2026, 0, 5, 14, 0), // Mon Jan 5 2026, 2:00pm
     expected: false,
   },
+  {
+    description: 'date rule: last minute before the range -> mirrored',
+    title: 'Holiday Party',
+    startTime: new Date(2026, 11, 23, 23, 59),
+    expected: false,
+  },
+  {
+    description: 'date rule: first minute of the range -> excluded',
+    title: 'Holiday Party',
+    startTime: new Date(2026, 11, 24, 0, 0),
+    expected: true,
+  },
+  {
+    description: 'date rule: end date is inclusive, last minute of it -> excluded',
+    title: 'Holiday Party',
+    startTime: new Date(2026, 11, 26, 23, 59),
+    expected: true,
+  },
+  {
+    description: 'date rule: first minute after the range -> mirrored',
+    title: 'Holiday Party',
+    startTime: new Date(2026, 11, 27, 0, 0),
+    expected: false,
+  },
+  {
+    description: 'date rule: range spanning a month boundary, single-digit day -> excluded',
+    title: 'Fall Break',
+    startTime: new Date(2026, 9, 1, 12, 0),
+    expected: true,
+  },
+  {
+    description: 'date rule: range spanning a year boundary -> excluded',
+    title: 'Winter Break',
+    startTime: new Date(2027, 0, 2, 12, 0),
+    expected: true,
+  },
+  {
+    description: 'date rule: same month and day in a different year -> mirrored',
+    title: 'Holiday Party',
+    startTime: new Date(2027, 11, 25, 12, 0),
+    expected: false,
+  },
+  {
+    description: 'date+day rule: in range on the right day (Mon Aug 3) -> excluded',
+    title: 'Team Sync',
+    startTime: new Date(2026, 7, 3, 10, 0),
+    expected: true,
+  },
+  {
+    description: 'date+day rule: in range on the wrong day (Tue Aug 4) -> mirrored',
+    title: 'Team Sync',
+    startTime: new Date(2026, 7, 4, 10, 0),
+    expected: false,
+  },
+  {
+    description: 'date rule with match-any title: any event on that date -> excluded',
+    title: 'Anything At All',
+    startTime: new Date(2026, 6, 4, 15, 0),
+    expected: true,
+  },
+  {
+    description: 'date rule with match-any title: the day after -> mirrored',
+    title: 'Anything At All',
+    startTime: new Date(2026, 6, 5, 15, 0),
+    expected: false,
+  },
 ];
 
 function runTests() {
   var results = testMatchesRules()
+    .concat(testMalformedDateRules())
     .concat(testComputeSyncKey())
     .concat(testComputeSignature())
     .concat(testResolveColorId());
@@ -104,6 +176,37 @@ function testMatchesRules() {
     CONFIG.rules = originalRules;
   }
   return results;
+}
+
+// A malformed date would otherwise compare as plain text and silently exclude
+// the wrong events, so it has to fail the run instead.
+function testMalformedDateRules() {
+  var cases = [
+    { description: 'date rule: US-style date is rejected', date: { start: '12/25/2026', end: '12/25/2026' } },
+    { description: 'date rule: unpadded date is rejected', date: { start: '2026-1-5', end: '2026-1-5' } },
+    { description: 'date rule: missing end is rejected', date: { start: '2026-12-25' } },
+  ];
+
+  var originalRules = CONFIG.rules;
+  try {
+    return cases.map(function (testCase) {
+      CONFIG.rules = [{ type: 'exact', value: 'Holiday Party', date: testCase.date }];
+      var threw = false;
+      try {
+        matchesRules('Holiday Party', new Date(2026, 11, 25, 12, 0));
+      } catch (e) {
+        threw = true;
+      }
+      return {
+        description: testCase.description,
+        expected: 'throws',
+        actual: threw ? 'throws' : 'no error',
+        passed: threw,
+      };
+    });
+  } finally {
+    CONFIG.rules = originalRules;
+  }
 }
 
 // --- Identity and change detection ---------------------------------------

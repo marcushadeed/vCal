@@ -3,7 +3,7 @@
 //
 // CONFIG.rules is a BLACKLIST: an event is mirrored unless it matches one
 // of these rules. matchesRules() returns true when the title (and, if the
-// rule specifies them, day/time) matches a rule, meaning the event should
+// rule specifies them, day/time/date) matches a rule, meaning the event should
 // be EXCLUDED from the mirror — not included.
 //
 // The only external state this depends on is CONFIG.rules (see
@@ -14,9 +14,7 @@ var DAY_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
 function matchesRules(title, startTime) {
   return CONFIG.rules.some(function (rule) {
-    return ruleMatchesTitle(rule, title) &&
-      ruleMatchesDay(rule, startTime) &&
-      ruleMatchesTime(rule, startTime);
+    return ruleMatches(rule, title, startTime);
   });
 }
 
@@ -28,11 +26,18 @@ function findMatchingRule(title, startTime) {
   var rules = CONFIG.rules;
   for (var i = 0; i < rules.length; i++) {
     var rule = rules[i];
-    if (ruleMatchesTitle(rule, title) && ruleMatchesDay(rule, startTime) && ruleMatchesTime(rule, startTime)) {
+    if (ruleMatches(rule, title, startTime)) {
       return rule;
     }
   }
   return null;
+}
+
+function ruleMatches(rule, title, startTime) {
+  return ruleMatchesTitle(rule, title) &&
+    ruleMatchesDay(rule, startTime) &&
+    ruleMatchesTime(rule, startTime) &&
+    ruleMatchesDate(rule, startTime);
 }
 
 function ruleMatchesTitle(rule, title) {
@@ -66,4 +71,32 @@ function ruleMatchesTime(rule, startTime) {
 function parseTimeToMinutes(hhmm) {
   var parts = hhmm.split(':');
   return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+}
+
+// Both ends of the range are inclusive. Zero-padded YYYY-MM-DD strings sort
+// chronologically, so plain string comparison is enough.
+function ruleMatchesDate(rule, startTime) {
+  if (!rule.date) {
+    return true;
+  }
+  assertValidDate(rule.date.start);
+  assertValidDate(rule.date.end);
+  var date = formatDate(startTime);
+  return date >= rule.date.start && date <= rule.date.end;
+}
+
+// A malformed date would compare as plain text and silently exclude the wrong
+// events, so fail the run instead.
+function assertValidDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error('Invalid date in rule: "' + value + '". Expected YYYY-MM-DD.');
+  }
+}
+
+function formatDate(date) {
+  var month = String(date.getMonth() + 1);
+  var day = String(date.getDate());
+  return date.getFullYear() + '-' +
+    (month.length < 2 ? '0' : '') + month + '-' +
+    (day.length < 2 ? '0' : '') + day;
 }

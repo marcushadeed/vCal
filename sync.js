@@ -428,6 +428,9 @@ function describeRule(rule) {
   if (rule.time) {
     desc += ', time=' + rule.time.start + '-' + rule.time.end;
   }
+  if (rule.date) {
+    desc += ', date=' + rule.date.start + ' to ' + rule.date.end;
+  }
   return desc;
 }
 

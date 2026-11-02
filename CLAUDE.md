@@ -19,7 +19,7 @@ function matchesRules(title, startTime) {
 }
 ```
 
-This allows testing against sample titles and times without touching CalendarApp or running the full sync. An event is mirrored when `matchesRules()` returns `false`. The start time is a parameter (rather than read from an event object) specifically to keep the function pure — `days` and `time` rules need it.
+This allows testing against sample titles and times without touching CalendarApp or running the full sync. An event is mirrored when `matchesRules()` returns `false`. The start time is a parameter (rather than read from an event object) specifically to keep the function pure — `days`, `time` and `date` rules need it.
 
 ### Reconciliation Strategy
 Reconciliation is **incremental**. Each run computes the desired state, compares it against what the mirror already contains, and writes only the difference. A steady-state day typically writes **nothing at all**.
@@ -83,14 +83,14 @@ When an event title has multiple instances per week, use time-based filters to e
    { type: 'regex', value: /Roadmap/, time: { start: '14:00', end: '15:30' } }
    ```
 2. **Time format** — 24-hour HH:MM format. Times are evaluated against the event's start time in the user's calendar timezone.
-3. **Logic** — An event matches a blacklist rule (and is excluded) when its title matches AND (if `days`/`time` are specified) its start day/time falls within those constraints. An event that matches no rule is mirrored by default.
+3. **Logic** — An event matches a blacklist rule (and is excluded) when its title matches AND (if `days`/`time`/`date` are specified) its start day/time/date falls within those constraints. An event that matches no rule is mirrored by default.
 4. **Overlap handling** — If an event matches multiple exclusion rules, it is still excluded only once — exclusion is a boolean outcome, so no special de-duplication is needed.
 
 ## Testing
 
 `runTests()` runs **without touching CalendarApp**, so it's fast and safe to run from the Apps Script editor. It covers four pure functions:
 
-- `matchesRules()` — blacklist filtering, including day- and time-constrained rules.
+- `matchesRules()` — blacklist filtering, including day-, time- and date-constrained rules.
 - `resolveColorId()` — the event override / source-calendar colour precedence, and that out-of-range or non-string colour ids are ignored.
 - `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys.
 - `computeSignature()` — that a change to each mirrored field is detected, and that an edit to an unmirrored property is still caught via `lastUpdated`.
@@ -136,6 +136,7 @@ Events added to the mirror by hand have no sync key and will be deleted on the n
   - `value`: String or RegExp to match against event title
   - `days` (optional): Array of day codes (`['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA']`). If present, only instances starting on one of these days are excluded by this rule.
   - `time` (optional): Time window object with `start` and `end` in 24-hour format (HH:MM). If present, only events with start times within this window are excluded by this rule.
+  - `date` (optional): Date range object with `start` and `end` in `YYYY-MM-DD` format, both inclusive. If present, only events starting within this range are excluded by this rule. A malformed date throws and fails the run, since it would otherwise silently exclude the wrong events. A rule always needs a title matcher, so use `{ type: 'regex', value: /.*/, date: ... }` to exclude every event in a range.
 - `lookaheadDays`: Number of days to look ahead (default 180) to avoid fetching infinitely recurring events
 
 This file is **not tracked in git** (it's in `.gitignore`), but **is pushed to Apps Script** (not in `.claspignore`). User secrets stay local; script logic is version-controlled.
