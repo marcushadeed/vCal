@@ -56,28 +56,45 @@ function mirrorCalendarSync() {
   }
 
   var startedAt = Date.now();
+  logTiming('run start', startedAt);
 
   var windowStart = new Date();
   var windowEnd = new Date(windowStart.getTime() + CONFIG.lookaheadDays * 24 * 60 * 60 * 1000);
 
-  var partitioned = collectEvents(windowStart, windowEnd);
-  var desired = buildDesiredEvents(partitioned.included);
+  var partitioned = collectEvents(windowStart, windowEnd, startedAt);
+  var desired = buildDesiredEvents(partitioned.included, startedAt);
   var existing = fetchMirrorIndex(windowStart, windowEnd);
+  logTiming('fetchMirrorIndex done', startedAt);
   var plan = buildPlan(desired, existing);
+  logTiming(
+    'buildPlan done: ' + plan.creates.length + ' create(s), ' + plan.updates.length + ' update(s), ' +
+    plan.deletes.length + ' delete(s), ' + plan.unchanged + ' unchanged',
+    startedAt
+  );
 
   if (DRY_RUN) {
     logDryRun(plan, partitioned.excluded, windowStart, windowEnd);
     return;
   }
 
+  logTiming('applyPlan start', startedAt);
   applyPlan(plan, startedAt);
+  logTiming('applyPlan done', startedAt);
+}
+
+// Records how far a run got (issue #7). When Apps Script kills an execution,
+// the last line logged shows where it stopped. Uses console.log rather than
+// Logger.log so the line goes to Cloud Logging as it is emitted, in case
+// Logger output does not survive the kill.
+function logTiming(label, startedAt) {
+  console.log('[timing ' + ((Date.now() - startedAt) / 1000).toFixed(1) + 's] ' + label);
 }
 
 // Splits every source event in the window into `included` (mirrored — did
 // not match any blacklist rule) and `excluded` (filtered out — matched a
 // blacklist rule). Rules are a blacklist: an event is mirrored by default
 // unless CONFIG.rules says otherwise (see CLAUDE.md).
-function collectEvents(windowStart, windowEnd) {
+function collectEvents(windowStart, windowEnd, startedAt) {
   var included = [];
   var excluded = [];
   CONFIG.sourceCalendars.forEach(function (source) {
@@ -96,7 +113,9 @@ function collectEvents(windowStart, windowEnd) {
     }
     // getEvents() expands recurring events into individual instances, so a
     // weekly meeting becomes one entry per occurrence in this window.
+    logTiming('getEvents start: ' + source.name, startedAt);
     var events = calendar.getEvents(windowStart, windowEnd);
+    logTiming('getEvents done: ' + source.name + ', ' + events.length + ' event(s)', startedAt);
     events.forEach(function (event) {
       var title = event.getTitle();
       var startTime = event.getStartTime();
@@ -115,15 +134,16 @@ function collectEvents(windowStart, windowEnd) {
         });
       }
     });
+    logTiming('filter done: ' + source.name, startedAt);
   });
   return { included: included, excluded: excluded };
 }
 
 // Turns the included source events into the exact Calendar API resources we
 // want the mirror to contain, keyed by sync key.
-function buildDesiredEvents(included) {
+function buildDesiredEvents(included, startedAt) {
   var desired = {};
-  included.forEach(function (match) {
+  included.forEach(function (match, index) {
     var syncKey = computeSyncKey(
       match.sourceCalendarId,
       match.event.getId(),
@@ -155,7 +175,12 @@ function buildDesiredEvents(included) {
       startTime: match.event.getStartTime(),
       colorId: resource.colorId || '',
     };
+
+    if ((index + 1) % 100 === 0) {
+      logTiming('buildDesiredEvents: ' + (index + 1) + ' of ' + included.length, startedAt);
+    }
   });
+  logTiming('buildDesiredEvents done: ' + included.length + ' event(s)', startedAt);
   return desired;
 }
 
