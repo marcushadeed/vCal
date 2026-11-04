@@ -1,8 +1,9 @@
 // Paste into the OLD project's editor and run exportSettings. Task 8 of the
 // shared link plan covers when. Remove it from that project afterwards.
 //
-// Logs one JSON string for importSettings() in the new project. The output holds
-// personal calendar ids and rules, so don't save it in this repo. This file itself
+// Logs JSON to paste into importSettings() in the new project, with no quotes around
+// it. The output holds personal calendar ids and rules, so don't save it in this
+// repo. This file itself
 // holds no personal data, and dev/ is never pushed.
 
 function exportSettings() {

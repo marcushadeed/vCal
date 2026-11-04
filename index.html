@@ -492,6 +492,9 @@
       parent.appendChild(el('h3', '', 'Preview. Nothing has been changed.'));
       parent.appendChild(el('p', '', counts.creates + ' to add, ' + counts.updates + ' to update, ' +
         counts.deletes + ' to delete, ' + counts.unchanged + ' unchanged, ' + counts.excluded + ' excluded by rules.'));
+      if (previewResult.massDelete) {
+        parent.appendChild(el('div', 'notice warning', 'This would delete most of your mirror, so scheduled syncs won\'t do it on their own. Check the list below. If it\'s what you want, click Sync now.'));
+      }
       appendPreviewList(parent, 'To delete', previewResult.deletes, true);
       appendPreviewList(parent, 'To add', previewResult.creates);
       appendPreviewList(parent, 'To update', previewResult.updates);
@@ -572,7 +575,7 @@
       var status = data.status;
       parent.appendChild(el('h2', '', 'Status'));
       if (data.stale) {
-        parent.appendChild(el('div', 'notice warning', 'vCal hasn\'t recorded a sync when one was expected. The app may be unavailable, so ask its owner to check it.'));
+        parent.appendChild(el('div', 'notice warning', 'vCal hasn\'t recorded a sync when one was expected. Try Pause, then Turn on sync. If that doesn\'t help, the app may be unavailable, so ask its owner to check it.'));
       }
       parent.appendChild(statusLine('Sync', settings.enabled ? 'On' : 'Paused'));
       parent.appendChild(statusLine('How often', FREQUENCY_LABELS[settings.frequency]));
@@ -591,7 +594,11 @@
       var actions = el('div', 'row');
       actions.appendChild(button('Preview', runPreview));
       var syncButton = button('Sync now', function () {
-        runLong('syncNow');
+        runLong('syncNow', function (result) {
+          if (result.busy) {
+            showError('Another sync is already running. Try again in a few minutes.');
+          }
+        });
       });
       syncButton.disabled = busy || !settings.previewed;
       actions.appendChild(syncButton);
@@ -712,6 +719,13 @@
       data.warnings.forEach(function (warning) {
         warningsEl.appendChild(el('div', 'notice warning', warning));
       });
+      if (data.removedRulesNotice) {
+        var notice = el('div', 'notice warning', data.removedRulesNotice + ' ');
+        notice.appendChild(button('Dismiss', function () {
+          act('dismissRemovedRules', []);
+        }));
+        warningsEl.appendChild(notice);
+      }
     }
 
     function render() {

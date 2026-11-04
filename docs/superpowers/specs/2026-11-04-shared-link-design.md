@@ -58,8 +58,8 @@ Config rules and page blocks become one list. `blocks.js` becomes the rule store
 - "Any title" stores regex `.*`, so excluding everything over a holiday needs no regex knowledge.
 - New pure `validateRule()` checks for a known type, a non-empty value, a compilable regex, valid day codes, `HH:MM` times with start before end, and valid dates with start not after end.
 - Editing writes the new rule, then deletes the old one, since keys are content hashes.
-- `pruneExpiredBlocks()` applies to any rule whose date range has passed, using the user's time zone.
-- An unreadable stored rule is deleted when rules load, with only a count logged. Users have no editor to repair one, and the worst outcome is that its events return to the mirror.
+- Rules are deleted 30 days after their date range ends, using the user's time zone. Rules match on start date but the sync reads events still running, so deleting one sooner would bring back a multi-day event it excluded.
+- An unreadable stored rule is deleted when rules load, with only a count logged, and the page shows a notice until it's dismissed. Users have no editor to repair one, and the worst outcome is that its events return to the mirror. A test fixes the stored rule shapes that must keep validating, so tightening `validateRule()` can't delete them for every user.
 - `classifyEvent()` loses its `'config'` case, and the "blocked by config.js" label goes away. **Block this** and **Block all titled this** stay, and add to the same list.
 
 ## Time zones
@@ -88,7 +88,9 @@ Rule times must follow each user's time zone, but `getHours()`, `getDay()` and s
 - **Pause** deletes the trigger and clears `enabled`.
 - A scheduled run with `enabled` unset does nothing, so a leftover trigger can't write anything.
 - **Sync now** is available after a preview, and lets a large first sync finish over several passes.
-- `LockService.getUserLock()` wraps sync, because **Sync now** can overlap a scheduled run. A run that can't get the lock exits without error.
+- `LockService.getUserLock()` wraps sync, because **Sync now** can overlap a scheduled run. A run that can't get the lock exits without error, and **Sync now** tells the user another run is in progress.
+- **A run stops before a mass delete**: more than half of the mirror, and at least 10 events. A preview is only required once, so this protects against a later rule that matches too much. The page explains what happened. A preview approves as many deletes as it showed, and only **Sync now** can use that approval, so a scheduled run never carries out a mass delete.
+- Extra copies in the mirror with the same sync key are deleted, keeping the first.
 - Every run records its result in `status`. Failures are stored, then rethrown.
 
 ## Page
@@ -118,7 +120,7 @@ Sync keys derive only from calendar ID, iCalUID and start time, so the new proje
 
 1. In the old project, a temporary function logs settings and blocks as JSON. It stays private there.
 2. Create the new project with link sharing **off**, and push the code.
-3. In the new project's editor, run a temporary import function with that JSON, then delete it. This must happen before the first deployment, so the data never lands in a saved version.
+3. In the new project's editor, run a temporary import function with that JSON pasted in as an object, with no quotes around it, then delete it. Inside a string, regex escapes would change with no error. This must happen before the first deployment, so the data never lands in a saved version.
 4. Run **Preview** in the new deployment. Expect close to zero changes.
 5. Delete the old project's trigger, then **Turn on sync** on the page.
 6. Check that the project's code holds nothing personal, then turn on link sharing.

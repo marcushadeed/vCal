@@ -111,6 +111,7 @@ function loadStoredSettings() {
     enabled: false,
     enabledAt: '',
     frequency: 'daily',
+    approvedDeletes: 0,
   };
   var json = PropertiesService.getUserProperties().getProperty(SETTINGS_KEY);
   if (!json) {
@@ -131,6 +132,15 @@ function loadStoredSettings() {
 
 function saveStoredSettings(settings) {
   PropertiesService.getUserProperties().setProperty(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+// A preview's approval lasts until the next sync that finishes.
+function clearApprovedDeletes() {
+  var settings = loadStoredSettings();
+  if (settings.approvedDeletes) {
+    settings.approvedDeletes = 0;
+    saveStoredSettings(settings);
+  }
 }
 
 // Returns null before the first run.

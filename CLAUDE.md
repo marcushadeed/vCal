@@ -47,7 +47,7 @@ Two pieces of metadata on every mirrored event make this work, both stored in pr
 
 A rescheduled source event gets a new sync key, so it shows up as a delete plus a create rather than an update. Slightly less efficient, but it keeps identity fully derivable from the source with no stored mapping to maintain.
 
-Events in the mirror window **without** a sync key — created by hand, or by a pre-incremental version of this script — are treated as untracked and deleted. The mirror calendar is owned by the script.
+Events in the mirror window **without** a sync key — created by hand, or by a pre-incremental version of this script — are treated as untracked and deleted. The mirror calendar is owned by the script. Extra copies with the same sync key are deleted too, keeping the first.
 
 ### Reading Source Events
 Source calendars are read with `listSourceEvents()` (`Calendar.Events.list`), which returns every event and its fields in one paginated call per calendar. **Don't read source events through `CalendarApp`.** Its per-event getters made about 8,000 calls per run, which pushed runs past the 6-minute limit before they reached the runtime guard (issue #7).
@@ -81,6 +81,7 @@ The first run after a large change (or the first run on an empty mirror) may tak
 - `runSync()` holds `LockService.getUserLock()`, because **Sync now** can overlap a scheduled run. A run that can't get the lock returns `null` without error.
 - Every run records its result in the `status` property. Failures are recorded, then rethrown.
 - `assertReadyToSync()` refuses to preview or sync with no mirror or no sources. **No sources would give an empty desired state, and the diff would delete the whole mirror.**
+- **A run stops before a mass delete.** A preview is only required once, but a later rule like `.+` can still empty the mirror. `isMassDelete()` is more than half of the mirror and at least `MASS_DELETE_MINIMUM` (10) events. `shouldStopForDeletes()` then stops the run unless a preview showed at least that many deletes. Only **Sync now** passes that approval (`approvedDeletes`), so a scheduled run never carries out a mass delete, and a finished sync clears it. Don't make a scheduled run honour it: viewing a preview isn't agreeing to it.
 - `isRunStale()` drives the page's overdue warning. Turning off link sharing makes triggers fail before our code runs, so nothing can be recorded and stored errors aren't enough.
 
 ### Event Handling
@@ -116,8 +117,9 @@ When an event title has multiple instances per week, use time-based filters to e
 7. **All-day starts must go through `localStartParts()` or `parseEventStart()`.** `new Date('2026-12-25')` is UTC midnight, which is Dec 24 in New York.
 8. **The page reads events with `listSourceEvents()`**, the same as the sync. Unlike the sync, it catches a failed calendar and shows a warning, because a page load can't delete anything.
 9. **Event text is inserted with `textContent`, never `innerHTML`.** Anyone who can edit a shared calendar controls it.
-10. **An unreadable stored rule is deleted when rules load**, with only a count logged. Users have no editor to repair one, and the worst outcome is that its events return to the mirror. Rules whose date range has passed are deleted on page load, using the user's time zone.
-11. **The page always receives the stored form**, because a `RegExp` can't pass through `google.script.run`.
+10. **An unreadable stored rule is deleted when rules load**, with only a count logged, and the page shows a notice until it's dismissed. Users have no editor to repair one, and the worst outcome is that its events return to the mirror. **So tightening `validateRule()` deletes matching rules for every user at their next load.** `STORED_RULE_FIXTURES` in `tests.js` pins what must keep validating. Only ever add to it.
+11. **Rules outlive their date range by 30 days** (`RULE_EXPIRY_GRACE_DAYS`), then are deleted on page load, using the user's time zone. Rules match on start date, but the sync reads events still running, so removing a rule once its date passes would bring back a multi-day event it excluded.
+12. **The page always receives the stored form**, because a `RegExp` can't pass through `google.script.run`.
 
 ### Calendars
 **Create mirror calendar** is the only way to set a mirror on the page, because the sync deletes everything in the mirror without a sync key. Users can't point it at an existing calendar. `loadSettings()` refuses a mirror that is the primary calendar or is also a source. Sources come from a picker backed by `Calendar.CalendarList.list`, which leaves out the mirror but keeps any stored source that is no longer listed, so it can be removed.
@@ -133,12 +135,14 @@ When an event title has multiple instances per week, use time-based filters to e
 - `validateRule()`, `normalizeRule()`, `compileRule()`, `parseStoredRule()` and `describeRule()` — what's accepted and refused, that errors don't repeat the rule, and regex rules surviving JSON.
 - `resolveColorId()` — the event override / source-calendar colour precedence, and that out-of-range or non-string colour ids are ignored.
 - `buildEventResource()` — timed and all-day items, missing fields, that attendees are never copied and reminders are cleared, and that an offset timestamp hashes the same as its UTC form.
-- `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys.
+- `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys. `testIdentityIsPinned()` fixes a timed key, an all-day key and a signature to the values existing mirrors use. If one changes, every mirrored event is rebuilt.
 - `computeSignature()` — that a change to each mirrored field is detected, and that an edit to an unmirrored property is still caught via `lastUpdated`.
 - `buildBlockRule()` — that an occurrence block matches only that occurrence, a title block matches every instance, and an empty title is refused. Rules are round-tripped through JSON first, as the store does.
 - `assertSafeMirror()`, `assertReadyToSync()`, `isMirrorMissing()`, `validateLookaheadDays()` and `validateSources()` — the settings safety checks.
 - `isRunStale()`, `summarizePlan()`, `finishRun()`, `describeRunError()` and `tagSourceError()` — the lifecycle's pure logic, including that a rethrown error's message holds no calendar name.
-- `parseEventStart()` and `isBlockExpired()` — the rest of the store's pure logic.
+- `isMassDelete()`, `shouldStopForDeletes()` and `describeMassDelete()` — the mass delete limits, and that the message holds counts only.
+- `addMirrorItem()` and `buildPlan()` — that a duplicate is deleted and its first copy kept.
+- `parseEventStart()`, `isBlockExpired()`, `describeRemovedRules()` and `comparePageEvents()` — the rest of the store's and page's pure logic.
 
 Anything added to `computeSignature()` needs a corresponding case in `testComputeSignature()`; a field that is hashed but untested will silently stop triggering updates if it is ever dropped.
 
@@ -183,8 +187,9 @@ Everything users edit lives on the page, and is stored per user in User Properti
   - `mirrorCalendarId`: Set only by **Create mirror calendar**.
   - `sourceCalendars`: Array of `{ id, name, color? }` objects. `color` is an optional event-colour id (`'1'`-`'11'`) applied to every event mirrored from that calendar, so sources stay distinguishable in the mirror. `validateSources()` refuses an id outside that range, because the API rejects invalid ids outright, which would fail every write in the run.
   - `lookaheadDays`: Number of days to look ahead, from 1 to 365 (default 180), to avoid fetching infinitely recurring events.
-  - `previewed`, `enabled`, `enabledAt`, `frequency`: The sync lifecycle. `frequency` is `daily`, `every6h` or `hourly`.
+  - `previewed`, `enabled`, `enabledAt`, `frequency`, `approvedDeletes`: The sync lifecycle. `frequency` is `daily`, `every6h` or `hourly`.
 - The `status` property holds JSON: `lastRunAt`, `created`, `updated`, `deleted`, `unchanged`, `deferred` and `error`.
+- The `removedRules` property holds how many unreadable rules were removed since the user last dismissed the page's notice.
 - Rules are in `rule:` properties. See Rule Store. Each has:
   - `type`: `'exact'`, `'contains'` or `'regex'`
   - `value`: Text to match against the event title. For `regex`, the pattern as text.

@@ -10,6 +10,12 @@
 // occurrence, breaks its block and the event returns to the mirror.
 
 var RULE_KEY_PREFIX = 'rule:';
+var REMOVED_RULES_KEY = 'removedRules';
+
+// Rules match on an event's start date, but a sync also reads events that started
+// earlier and are still running. So a rule outlives its date range by this long,
+// or a multi-day event it excluded would return to the mirror part way through.
+var RULE_EXPIRY_GRACE_DAYS = 30;
 
 // --- Pure ---------------------------------------------------------------------
 
@@ -60,7 +66,18 @@ function parseEventStart(start) {
 
 // `today` is a YYYY-MM-DD string. Rules with no date never expire.
 function isBlockExpired(rule, today) {
-  return Boolean(rule.date) && rule.date.end < today;
+  if (!rule.date) {
+    return false;
+  }
+  var end = rule.date.end.split('-').map(Number);
+  var keepUntil = new Date(Date.UTC(end[0], end[1] - 1, end[2] + RULE_EXPIRY_GRACE_DAYS));
+  return keepUntil.toISOString().slice(0, 10) < today;
+}
+
+function describeRemovedRules(count) {
+  return count === 1
+    ? '1 saved rule could not be read and was removed, so events it excluded may return to your mirror.'
+    : count + ' saved rules could not be read and were removed, so events they excluded may return to your mirror.';
 }
 
 // Reads a property's value. Returns null when it can't be used as a rule.
@@ -117,8 +134,9 @@ function describeRuleTitle(rule) {
 
 // Returns [{ key, rule }], with rules in their stored form. An unreadable rule
 // is deleted rather than failing the run: users have no editor to repair one,
-// and the worst outcome is that its events return to the mirror. The log holds
-// only a count, because the owner can read every user's logs.
+// and the worst outcome is that its events return to the mirror. The page tells
+// the user how many went. The log holds only a count, because the owner can read
+// every user's logs.
 function loadStoredRules() {
   var store = PropertiesService.getUserProperties();
   var properties = store.getProperties();
@@ -137,9 +155,19 @@ function loadStoredRules() {
     }
   });
   if (removed > 0) {
+    store.setProperty(REMOVED_RULES_KEY, String(loadRemovedRuleCount() + removed));
     Logger.log('Removed ' + removed + ' unreadable stored entries.');
   }
   return loaded;
+}
+
+// How many rules were removed since the user last dismissed the page's notice.
+function loadRemovedRuleCount() {
+  return Number(PropertiesService.getUserProperties().getProperty(REMOVED_RULES_KEY)) || 0;
+}
+
+function clearRemovedRuleCount() {
+  PropertiesService.getUserProperties().deleteProperty(REMOVED_RULES_KEY);
 }
 
 function loadRules() {

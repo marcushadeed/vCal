@@ -51,13 +51,17 @@ function mirrorCalendarSync() {
   if (!loadStoredSettings().enabled) {
     return;
   }
-  runSync();
+  // No approval: only someone at the page can approve a large delete.
+  runSync(0);
 }
 
 // One real sync, from a trigger or the page's Sync now. Returns the status, or
 // null when another run holds the lock, which isn't an error: Sync now can overlap
 // a scheduled run. Failures are recorded so the page can show them, then rethrown.
-function runSync() {
+//
+// `approvedDeletes` is how many deletes the user last saw in a preview, and only
+// Sync now passes it. See shouldStopForDeletes().
+function runSync(approvedDeletes) {
   var lock = LockService.getUserLock();
   if (!lock.tryLock(0)) {
     return null;
@@ -66,9 +70,13 @@ function runSync() {
     var startedAt = Date.now();
     assertReadyToSync(loadSettings());
     var built = buildSyncPlan(startedAt);
+    if (shouldStopForDeletes(built.plan, approvedDeletes)) {
+      throw new Error(describeMassDelete(built.plan));
+    }
     logTiming('applyPlan start', startedAt);
     var counts = applyPlan(built.plan, startedAt);
     logTiming('applyPlan done', startedAt);
+    clearApprovedDeletes();
     var status = {
       lastRunAt: new Date().toISOString(),
       created: counts.created,
@@ -94,6 +102,32 @@ function runSync() {
   } finally {
     lock.releaseLock();
   }
+}
+
+// A preview is only required once, but a later rule like /.+/ or a removed source
+// can still empty the mirror. So a run that would delete more than half of it, and
+// at least this many events, needs someone to have seen that first.
+var MASS_DELETE_MINIMUM = 10;
+
+function countMirrorEvents(plan) {
+  // Creates aren't in the mirror yet. Everything else in the plan is.
+  return plan.updates.length + plan.deletes.length + plan.unchanged;
+}
+
+function isMassDelete(plan) {
+  return plan.deletes.length >= MASS_DELETE_MINIMUM && plan.deletes.length > countMirrorEvents(plan) / 2;
+}
+
+// A preview's approval covers only as many deletes as it showed. A larger delete
+// means something changed afterwards, which nobody has seen.
+function shouldStopForDeletes(plan, approvedDeletes) {
+  return isMassDelete(plan) && plan.deletes.length > (approvedDeletes || 0);
+}
+
+// Counts only, because this reaches the owner's logs when thrown.
+function describeMassDelete(plan) {
+  return 'vCal stopped before deleting ' + plan.deletes.length + ' of the ' + countMirrorEvents(plan) +
+    ' events in your mirror. Click Preview to check the list, then Sync now to go ahead.';
 }
 
 // Computes what a sync would change, without writing anything, so that Preview and
@@ -131,6 +165,7 @@ function summarizePlan(plan, excluded) {
     return { title: entry.title || '', start: start, source: entry.sourceName, reason: reason };
   };
   return {
+    massDelete: isMassDelete(plan),
     counts: {
       creates: plan.creates.length,
       updates: plan.updates.length,
@@ -145,7 +180,12 @@ function summarizePlan(plan, excluded) {
       return row(entry.desired, entry.desired.startLabel, 'Changed in its source calendar');
     }),
     deletes: plan.deletes.map(function (entry) {
-      var reason = entry.syncKey ? 'No longer in a source calendar, or now excluded by a rule' : 'Not created by vCal';
+      var reason = 'Not created by vCal';
+      if (entry.duplicate) {
+        reason = 'A duplicate copy of another event in the mirror';
+      } else if (entry.syncKey) {
+        reason = 'No longer in a source calendar, or now excluded by a rule';
+      }
       return row(entry, entry.startLabel || entry.start, reason);
     }),
     excludes: excluded.map(function (entry) {
@@ -383,10 +423,10 @@ function mapVisibility(visibility) {
 // Reads every event currently in the mirror window, indexed by sync key.
 // Events without a sync key (created by an older version of this script, or
 // added by hand) are returned separately as `untracked` — the mirror
-// calendar is treated as owned by this script, so those are cleaned up.
+// calendar is treated as owned by this script, so those are cleaned up. Extra
+// copies with the same key are returned as `duplicates`, and cleaned up too.
 function fetchMirrorIndex(windowStart, windowEnd) {
-  var tracked = {};
-  var untracked = [];
+  var index = emptyMirrorIndex();
   var pageToken = null;
 
   do {
@@ -399,29 +439,40 @@ function fetchMirrorIndex(windowStart, windowEnd) {
     });
 
     (response.items || []).forEach(function (item) {
-      var privateProps = (item.extendedProperties && item.extendedProperties.private) || {};
-      var syncKey = privateProps[SYNC_KEY];
-      var entry = {
-        id: item.id,
-        syncKey: syncKey,
-        signature: privateProps[SIGNATURE_KEY],
-        sourceName: privateProps[SOURCE_TAG_KEY] || 'unknown',
-        title: item.summary,
-        start: (item.start && (item.start.dateTime || item.start.date)) || 'unknown',
-        rawStart: item.start,
-        colorId: item.colorId || '',
-      };
-      if (syncKey) {
-        tracked[syncKey] = entry;
-      } else {
-        untracked.push(entry);
-      }
+      addMirrorItem(index, item);
     });
 
     pageToken = response.nextPageToken;
   } while (pageToken);
 
-  return { tracked: tracked, untracked: untracked };
+  return index;
+}
+
+function emptyMirrorIndex() {
+  return { tracked: {}, untracked: [], duplicates: [] };
+}
+
+function addMirrorItem(index, item) {
+  var privateProps = (item.extendedProperties && item.extendedProperties.private) || {};
+  var syncKey = privateProps[SYNC_KEY];
+  var entry = {
+    id: item.id,
+    syncKey: syncKey,
+    signature: privateProps[SIGNATURE_KEY],
+    sourceName: privateProps[SOURCE_TAG_KEY] || 'unknown',
+    title: item.summary,
+    start: (item.start && (item.start.dateTime || item.start.date)) || 'unknown',
+    rawStart: item.start,
+    colorId: item.colorId || '',
+  };
+  if (!syncKey) {
+    index.untracked.push(entry);
+  } else if (index.tracked[syncKey]) {
+    entry.duplicate = true;
+    index.duplicates.push(entry);
+  } else {
+    index.tracked[syncKey] = entry;
+  }
 }
 
 // Diffs desired against existing. Anything in the mirror that no longer
@@ -455,6 +506,10 @@ function buildPlan(desired, existing) {
   // added by hand). Removing them lets the first run after this upgrade
   // rebuild the mirror once into the tracked format.
   existing.untracked.forEach(function (entry) {
+    deletes.push(entry);
+  });
+
+  existing.duplicates.forEach(function (entry) {
     deletes.push(entry);
   });
 

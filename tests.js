@@ -146,7 +146,13 @@ function runTests() {
     .concat(testSettingsValidators())
     .concat(testRunErrorDescriptions())
     .concat(testSummarizePlan())
-    .concat(testIsMirrorMissing());
+    .concat(testIsMirrorMissing())
+    .concat(testIdentityIsPinned())
+    .concat(testMirrorDuplicates())
+    .concat(testMassDeleteGuard())
+    .concat(testStoredRuleFixtures())
+    .concat(testDescribeRemovedRules())
+    .concat(testComparePageEvents());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -577,7 +583,13 @@ function testIsBlockExpired() {
     return { type: 'exact', value: 'Lecture', date: { start: end, end: end } };
   };
   return [
-    blockResult('expiry: a block ending yesterday has expired', true, isBlockExpired(ending('2026-11-03'), today)),
+    // A multi-day event excluded by a rule dated on its first day is still running
+    // after that date, and removing the rule would bring it back to the mirror.
+    blockResult('expiry: a block ending yesterday is kept', false, isBlockExpired(ending('2026-11-03'), today)),
+    blockResult('expiry: a block ending 30 days ago is kept', false, isBlockExpired(ending('2026-10-05'), today)),
+    blockResult('expiry: a block ending 31 days ago has expired', true, isBlockExpired(ending('2026-10-04'), today)),
+    blockResult('expiry: the 30 days can cross a year boundary', true,
+      isBlockExpired(ending('2026-12-01'), '2027-01-01')),
     blockResult('expiry: a block ending today has not', false, isBlockExpired(ending('2026-11-04'), today)),
     blockResult('expiry: a block ending later has not', false, isBlockExpired(ending('2026-11-05'), today)),
     blockResult('expiry: a title block never expires', false,
@@ -854,5 +866,143 @@ function testIsMirrorMissing() {
     blockResult('mirror: no mirror set is not missing', false, isMirrorMissing('', calendars)),
     blockResult('mirror: a listed mirror is not missing', false, isMirrorMissing('m@x', calendars)),
     blockResult('mirror: a deleted mirror is missing', true, isMirrorMissing('gone@x', calendars)),
+  ];
+}
+
+// --- Safeguards ---------------------------------------------------------------
+
+// These values came from the code that built the existing mirrors. If one changes,
+// every mirrored event gets deleted and recreated, or rewritten, at the next sync.
+function testIdentityIsPinned() {
+  var results = [
+    blockResult('pinned: a timed sync key', 'a578e362020ab2a407d490c5799c2705',
+      computeSyncKey(SAMPLE_CALENDAR_ID, SAMPLE_ICAL_UID, new Date(Date.UTC(2026, 8, 1, 14, 0, 0)))),
+    blockResult('pinned: a signature', '5edc93f0e15a375cea97da7c3a1cfac9',
+      computeSignature(cloneResource(), SAMPLE_LAST_UPDATED)),
+  ];
+  // An all-day key depends on the script's time zone, New York in appsscript.json.
+  // The local runner can use another zone, where this value wouldn't apply.
+  if (new Date(2026, 11, 25).getTimezoneOffset() === 300) {
+    results.push(blockResult('pinned: an all-day sync key', '7da188f90ac6f0ded0a9df0b21be79fe',
+      computeSyncKey(SAMPLE_CALENDAR_ID, SAMPLE_ICAL_UID, parseEventStart({ date: '2026-12-25' }))));
+  }
+  return results;
+}
+
+function testMirrorDuplicates() {
+  var item = function (id, syncKey) {
+    var privateProps = {};
+    privateProps[SYNC_KEY] = syncKey;
+    privateProps[SIGNATURE_KEY] = 'same';
+    return {
+      id: id,
+      summary: 'Holiday',
+      start: { date: '2026-12-25' },
+      extendedProperties: { private: privateProps },
+    };
+  };
+  var index = emptyMirrorIndex();
+  addMirrorItem(index, item('first', 'k1'));
+  addMirrorItem(index, item('second', 'k1'));
+  addMirrorItem(index, item('other', 'k2'));
+  addMirrorItem(index, { id: 'manual', summary: 'By hand', start: { date: '2026-12-26' } });
+  var desired = {
+    k1: { syncKey: 'k1', signature: 'same' },
+    k2: { syncKey: 'k2', signature: 'same' },
+  };
+  var plan = buildPlan(desired, index);
+  var deletedIds = plan.deletes.map(function (entry) { return entry.id; }).sort().join(',');
+  return [
+    blockResult('duplicates: the first copy is kept', 'first', index.tracked.k1.id),
+    blockResult('duplicates: only the extra copy and the untracked event are deleted', 'manual,second', deletedIds),
+    blockResult('duplicates: the kept copies count as unchanged', 2, plan.unchanged),
+    blockResult('duplicates: nothing is recreated', 0, plan.creates.length),
+    blockResult('duplicates: the page explains why', 'A duplicate copy of another event in the mirror',
+      summarizePlan(plan, []).deletes.filter(function (row) { return row.reason.indexOf('duplicate') !== -1; })[0].reason),
+  ];
+}
+
+function testMassDeleteGuard() {
+  var plan = function (deletes, keptInMirror) {
+    var list = [];
+    for (var i = 0; i < deletes; i++) {
+      list.push({ title: 'PRIVATE-TITLE', start: '2026-11-04', sourceName: 'PRIVATE-CALENDAR', syncKey: 'k' + i });
+    }
+    return { creates: [], updates: [], deletes: list, unchanged: keptInMirror };
+  };
+  return [
+    blockResult('mass delete: an empty mirror is not', false, isMassDelete(plan(0, 0))),
+    blockResult('mass delete: 9 of 9 is below the minimum', false, isMassDelete(plan(9, 0))),
+    blockResult('mass delete: exactly half is not', false, isMassDelete(plan(10, 10))),
+    blockResult('mass delete: just over half is', true, isMassDelete(plan(10, 9))),
+    blockResult('mass delete: all of a large mirror is', true, isMassDelete(plan(20, 0))),
+    blockResult('mass delete: events still to be created do not count as being in the mirror', true, isMassDelete({
+      creates: plan(50, 0).deletes, updates: [], deletes: plan(10, 0).deletes, unchanged: 0,
+    })),
+    blockResult('mass delete: events to update count as being in the mirror', false, isMassDelete({
+      creates: [], updates: plan(10, 0).deletes, deletes: plan(10, 0).deletes, unchanged: 0,
+    })),
+    blockResult('mass delete: a scheduled run stops', true, shouldStopForDeletes(plan(20, 0), 0)),
+    blockResult('mass delete: an approved preview allows it', false, shouldStopForDeletes(plan(20, 0), 20)),
+    // Something changed after the preview, so its approval doesn't cover this.
+    blockResult('mass delete: a larger delete than was previewed stops', true, shouldStopForDeletes(plan(21, 0), 20)),
+    blockResult('mass delete: an ordinary delete never stops', false, shouldStopForDeletes(plan(5, 100), 0)),
+    blockResult('mass delete: the preview flags it', true, summarizePlan(plan(20, 0), []).massDelete),
+    blockResult('mass delete: the preview does not flag an ordinary delete', false, summarizePlan(plan(5, 100), []).massDelete),
+    // This message reaches the owner's logs when rethrown.
+    blockResult('mass delete: the message gives counts only',
+      'vCal stopped before deleting 20 of the 25 events in your mirror. Click Preview to check the list, then Sync now to go ahead.',
+      describeMassDelete(plan(20, 5))),
+  ];
+}
+
+// Rules already saved by real users. A rule that stops validating is deleted the
+// next time it loads, so tightening validateRule() can wipe rules for every user at
+// once. Only ever add to this list. If one of these fails, loosen the change.
+var STORED_RULE_FIXTURES = [
+  '{"type":"exact","value":"Lecture"}',
+  '{"type":"exact","value":"  Spaces kept  "}',
+  '{"type":"contains","value":"exam"}',
+  '{"type":"regex","value":"^Lab\\\\b"}',
+  '{"type":"regex","value":"^lab","flags":"i"}',
+  '{"type":"regex","value":".*","date":{"start":"2026-12-25","end":"2026-12-25"}}',
+  '{"type":"regex","value":".*","days":["SA","SU"]}',
+  '{"type":"exact","value":"Standup","days":["MO","WE"],"time":{"start":"09:00","end":"10:00"}}',
+  '{"type":"exact","value":"Break","date":{"start":"2026-12-20","end":"2027-01-05"}}',
+  '{"type":"exact","value":"Late","date":{"start":"2026-11-04","end":"2026-11-04"},"time":{"start":"23:59","end":"24:00"}}',
+  '{"type":"exact","value":"","date":{"start":"2026-11-04","end":"2026-11-04"},"time":{"start":"10:00","end":"10:01"}}',
+];
+
+function testStoredRuleFixtures() {
+  return STORED_RULE_FIXTURES.map(function (json) {
+    return blockResult('stored fixture stays readable: ' + json, true, parseStoredRule(json) !== null);
+  });
+}
+
+function testDescribeRemovedRules() {
+  return [
+    blockResult('removed rules: one',
+      '1 saved rule could not be read and was removed, so events it excluded may return to your mirror.',
+      describeRemovedRules(1)),
+    blockResult('removed rules: several',
+      '3 saved rules could not be read and were removed, so events they excluded may return to your mirror.',
+      describeRemovedRules(3)),
+  ];
+}
+
+// Sorts by what the page shows, because an all-day event's instant follows the
+// script's time zone and a heading is printed each time the day changes.
+function testComparePageEvents() {
+  var events = [
+    { title: 'evening', day: '2026-11-06', time: '18:00' },
+    { title: 'next day all-day', day: '2026-11-07', time: '' },
+    { title: 'all-day', day: '2026-11-06', time: '' },
+    { title: 'late the day before', day: '2026-11-05', time: '23:00' },
+    { title: 'morning', day: '2026-11-06', time: '09:00' },
+  ];
+  var sorted = events.slice().sort(comparePageEvents).map(function (event) { return event.title; }).join(', ');
+  return [
+    blockResult('page events: by day, then all-day first, then time',
+      'late the day before, all-day, morning, evening, next day all-day', sorted),
   ];
 }

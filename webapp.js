@@ -20,6 +20,7 @@ function getPageData() {
   var allCalendars = listUserCalendars();
   var warnings = [];
   var status = loadStatus();
+  var removedRules = loadRemovedRuleCount();
 
   return {
     timeZone: CONFIG.timeZone,
@@ -43,6 +44,7 @@ function getPageData() {
       return { id: id, name: EVENT_COLOR_NAMES[id] };
     }),
     warnings: warnings,
+    removedRulesNotice: removedRules > 0 ? describeRemovedRules(removedRules) : '',
   };
 }
 
@@ -96,9 +98,20 @@ function readPageEvents(settings, warnings) {
       warnings.push(describeRunError(tagSourceError(e, source.name)));
     }
   });
-  return events.sort(function (a, b) {
-    return a.startMs - b.startMs;
-  });
+  return events.sort(comparePageEvents);
+}
+
+// By the day and time the page shows, with all-day events (no time) first. An
+// all-day event's instant follows the script's time zone, so sorting by instant
+// would split a day's events under two headings for users elsewhere. Pure.
+function comparePageEvents(a, b) {
+  if (a.day !== b.day) {
+    return a.day < b.day ? -1 : 1;
+  }
+  if (a.time !== b.time) {
+    return a.time < b.time ? -1 : 1;
+  }
+  return 0;
 }
 
 function toPageEvent(item, sourceName) {
@@ -107,7 +120,6 @@ function toPageEvent(item, sourceName) {
   return {
     title: title,
     start: item.start.date || item.start.dateTime,
-    startMs: parseEventStart(item.start).getTime(),
     allDay: parts.allDay,
     day: parts.date,
     time: parts.allDay ? '' : formatMinutes(parts.minutes),
@@ -166,6 +178,11 @@ function blockEvent(scope, title, start, allDay) {
   addRule(buildBlockRule(scope, title, parts));
 }
 
+function dismissRemovedRules() {
+  loadSettings();
+  clearRemovedRuleCount();
+}
+
 // --- Sync lifecycle -----------------------------------------------------------
 
 // Makes no writes to any calendar. Returns its failure instead of throwing,
@@ -178,6 +195,8 @@ function previewSync() {
     // Read again, because a preview can take minutes.
     var latest = loadStoredSettings();
     latest.previewed = true;
+    // Sync now may carry out as many deletes as this preview just showed.
+    latest.approvedDeletes = built.plan.deletes.length;
     saveStoredSettings(latest);
     return { preview: summarizePlan(built.plan, built.excluded) };
   } catch (e) {
@@ -190,7 +209,8 @@ function syncNow() {
   assertReadyToSync(settings);
   assertPreviewed(settings);
   try {
-    return { status: runSync() || loadStatus() };
+    var status = runSync(settings.approvedDeletes);
+    return status ? { status: status } : { status: loadStatus(), busy: true };
   } catch (e) {
     // runSync() has already recorded it, and the page shows the status.
     return { status: loadStatus() };

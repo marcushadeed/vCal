@@ -652,7 +652,7 @@ git commit -m "rebuild the page around setup, rules and sync status"
 Neither file holds personal data, and Marcus pastes them into the editor in Task 8.
 
 - `dev/export-settings.js`: `exportSettings()` for the **old** project. Logs one JSON string of `{ settings: { mirrorCalendarId, sourceCalendars, lookaheadDays }, rules: [...] }`, combining `CONFIG.rules` and every `block:` Script Property. Regex values become their `.source` and `.flags` text, with `g` and `y` removed.
-- `dev/import-settings.js`: `importSettings(json)` for the **new** project. Saves the settings with `previewed` and `enabled` false, and adds each rule with `addRule()`, so an invalid rule stops the import with an error.
+- `dev/import-settings.js`: `importSettings(data)` for the **new** project, taking the exported JSON pasted in as an object. Saves the settings with `previewed` and `enabled` false, and adds each rule with `addRule()`, so an invalid rule stops the import with an error.
 
 - [ ] **Step 2: Rewrite `README.md`**
 
@@ -706,7 +706,7 @@ An agent must not do this task. Hand it to Marcus with the results of Tasks 1 to
 - [ ] **Step 1: Export from the old project.** Paste `dev/export-settings.js` into the old project's editor, run `exportSettings`, and copy the JSON. Remove the snippet afterwards.
 - [ ] **Step 2: Create the new project with link sharing off.** Move the current `.clasp.json` aside, run `clasp create --type standalone --title vCal`, run `git checkout appsscript.json`, confirm `clasp status` does **not** list `config.js`, then run `clasp push --force`.
 - [ ] **Step 3: Run the tests in the editor.** Run `runTests`, and accept the permission prompts. Expected: `All tests passed.`
-- [ ] **Step 4: Import.** In the editor, paste `dev/import-settings.js` and a temporary function calling `importSettings` with the JSON, and run it. Delete both from the editor and save. **Do this before the first deployment.** Confirm no personal data remains in the project's code.
+- [ ] **Step 4: Import.** In the editor, paste `dev/import-settings.js` and a temporary function, `function runImport() { importSettings(PASTE_THE_JSON_HERE); }`, with the JSON pasted in directly and **no quotes around it**. Run `runImport`. Delete both from the editor and save. **Do this before the first deployment.** Confirm no personal data remains in the project's code.
 - [ ] **Step 5: Deploy and preview.** Run `clasp deploy`, open the link and click **Preview**. Expected: close to zero creates, updates and deletes, with your existing exclusions listed.
 - [ ] **Step 6: Switch over.** Delete the old project's trigger, then click **Turn on sync** on the page. Confirm a scheduled run records a status.
 - [ ] **Step 7: Turn on link sharing** as **Anyone with the link: Viewer**.
@@ -717,5 +717,7 @@ An agent must not do this task. Hand it to Marcus with the results of Tasks 1 to
   4. Confirm a rule with a time limit matches in that account's time zone.
   5. **Pause**, and confirm no further runs.
   6. Confirm neither account sees the other's rules or settings.
+  7. **All-day events across time zones (review finding 4).** Use a source calendar and a mirror in different time zones, say Los Angeles and New York. Add an all-day event for today to the source, and run **Sync now** every few minutes during the hours when it's today in one zone but not the other, near midnight. Expected: **Preview** shows nothing to add once it's copied, and the mirror keeps one copy. If copies keep appearing, stop and report it: the sync removes extra copies only when it can see them, so this needs a code fix.
+  8. **Mass delete stop.** With at least 10 mirrored events, add a regex rule `.+`. Expected: the next scheduled run deletes nothing and the page explains why. **Preview** then **Sync now** carries it out. Delete the rule afterwards.
 - [ ] **Step 9: Check privacy.** As the owner, open the second account's runs, and confirm the logs contain no event titles, calendar names or IDs. As the second account, confirm the project's Executions page doesn't show other users' runs.
 - [ ] **Step 10: Decide on the old project.** Keep it private until you're happy, then delete it.
