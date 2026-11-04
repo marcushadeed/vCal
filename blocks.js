@@ -17,7 +17,8 @@ var BLOCK_KEY_PREFIX = 'block:';
 
 // scope 'title' blocks every event with this title, on any source calendar.
 // scope 'occurrence' blocks only events with this title starting in this minute.
-function buildBlockRule(scope, title, startTime) {
+// `parts` comes from localStartParts().
+function buildBlockRule(scope, title, parts) {
   if (scope === 'title') {
     // An exact rule on an empty title would block every untitled event.
     if (title.trim() === '') {
@@ -26,14 +27,12 @@ function buildBlockRule(scope, title, startTime) {
     return { type: 'exact', value: title };
   }
   if (scope === 'occurrence') {
-    var date = formatDate(startTime);
-    var minutes = startTime.getHours() * 60 + startTime.getMinutes();
     return {
       type: 'exact',
       value: title,
-      date: { start: date, end: date },
+      date: { start: parts.date, end: parts.date },
       // A 23:59 start gives an end of 24:00, which parseTimeToMinutes() handles.
-      time: { start: formatMinutes(minutes), end: formatMinutes(minutes + 1) },
+      time: { start: formatMinutes(parts.minutes), end: formatMinutes(parts.minutes + 1) },
     };
   }
   throw new Error('Unknown block scope: ' + scope);
@@ -116,7 +115,7 @@ function removeBlock(key) {
 }
 
 function pruneExpiredBlocks() {
-  var today = formatDate(new Date());
+  var today = Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd');
   loadBlocks().forEach(function (block) {
     if (isBlockExpired(block.rule, today)) {
       removeBlock(block.key);

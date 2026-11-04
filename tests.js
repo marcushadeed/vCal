@@ -138,7 +138,9 @@ function runTests() {
     .concat(testParseEventStart())
     .concat(testClassifyEvent())
     .concat(testIsBlockExpired())
-    .concat(testDescribeBlock());
+    .concat(testDescribeBlock())
+    .concat(testLocalStartParts())
+    .concat(testContainsRule());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -166,7 +168,7 @@ function testMatchesRules() {
   try {
     CONFIG.rules = TEST_RULES;
     TEST_CASES.forEach(function (testCase) {
-      var actual = matchesRules(testCase.title, testCase.startTime);
+      var actual = matchesRules(testCase.title, partsFromDate(testCase.startTime));
       results.push({
         description: testCase.description,
         expected: testCase.expected,
@@ -195,7 +197,7 @@ function testMalformedDateRules() {
       CONFIG.rules = [{ type: 'exact', value: 'Holiday Party', date: testCase.date }];
       var threw = false;
       try {
-        matchesRules('Holiday Party', new Date(2026, 11, 25, 12, 0));
+        matchesRules('Holiday Party', partsFromDate(new Date(2026, 11, 25, 12, 0)));
       } catch (e) {
         threw = true;
       }
@@ -469,6 +471,20 @@ function throwsResult(description, fn) {
   return blockResult(description, 'throws', threw ? 'throws' : 'no error');
 }
 
+// Local start parts from a Date's getters, so fixtures can stay plain Dates.
+// Real events go through localStartParts(), which is tested separately.
+function partsFromDate(date) {
+  var pad = function (value) {
+    return (value < 10 ? '0' : '') + value;
+  };
+  return {
+    date: date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()),
+    day: DAY_CODES[date.getDay()],
+    minutes: date.getHours() * 60 + date.getMinutes(),
+    allDay: false,
+  };
+}
+
 function withRules(rules, fn) {
   var originalRules = CONFIG.rules;
   try {
@@ -481,21 +497,21 @@ function withRules(rules, fn) {
 
 // Round-trips the rule through JSON first, because that is what the store does
 // to it. A rule that only matched before serialising would pass otherwise.
-function storedRuleMatches(rule, title, startTime) {
+function storedRuleMatches(rule, title, parts) {
   return withRules([JSON.parse(JSON.stringify(rule))], function () {
-    return matchesRules(title, startTime);
+    return matchesRules(title, parts);
   });
 }
 
 function testBuildBlockRule() {
-  var lecture = new Date(2026, 10, 4, 10, 0); // Wed Nov 4 2026, 10:00am
-  var nextWeek = new Date(2026, 10, 11, 10, 0);
-  var sameDayLater = new Date(2026, 10, 4, 14, 0);
-  var oneMinuteLater = new Date(2026, 10, 4, 10, 1);
+  var lecture = partsFromDate(new Date(2026, 10, 4, 10, 0)); // Wed Nov 4 2026, 10:00am
+  var nextWeek = partsFromDate(new Date(2026, 10, 11, 10, 0));
+  var sameDayLater = partsFromDate(new Date(2026, 10, 4, 14, 0));
+  var oneMinuteLater = partsFromDate(new Date(2026, 10, 4, 10, 1));
   var occurrence = buildBlockRule('occurrence', 'Lecture', lecture);
   var wholeTitle = buildBlockRule('title', 'Lecture', lecture);
-  var lateNight = new Date(2026, 10, 4, 23, 59);
-  var allDay = parseEventStart({ date: '2026-12-25' });
+  var lateNight = partsFromDate(new Date(2026, 10, 4, 23, 59));
+  var allDay = partsFromDate(parseEventStart({ date: '2026-12-25' }));
 
   return [
     blockResult('block: occurrence rule matches that occurrence', true,
@@ -517,7 +533,7 @@ function testBuildBlockRule() {
     blockResult('block: all-day occurrence is matched', true,
       storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', allDay)),
     blockResult('block: all-day occurrence does not match the next day', false,
-      storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', new Date(2026, 11, 26))),
+      storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', partsFromDate(new Date(2026, 11, 26)))),
     blockResult('block: untitled occurrence is allowed and matched', true,
       storedRuleMatches(buildBlockRule('occurrence', '', lecture), '', lecture)),
     throwsResult('block: title rule refuses an empty title', function () {
@@ -537,7 +553,7 @@ function testParseEventStart() {
   var timed = parseEventStart({ dateTime: '2026-09-01T14:00:00.000Z' });
   return [
     // new Date('2026-12-25') would be UTC midnight, i.e. Dec 24 in New York.
-    blockResult('start: an all-day date stays on the same local day', '2026-12-25', formatDate(allDay)),
+    blockResult('start: an all-day date stays on the same local day', 25, allDay.getDate()),
     blockResult('start: an all-day date is local midnight', 0, allDay.getHours()),
     blockResult('start: a timed start keeps its instant', Date.UTC(2026, 8, 1, 14, 0, 0), timed.getTime()),
     throwsResult('start: a malformed all-day date is refused', function () {
@@ -550,7 +566,7 @@ function testParseEventStart() {
 }
 
 function testClassifyEvent() {
-  var start = new Date(2026, 10, 4, 10, 0);
+  var start = partsFromDate(new Date(2026, 10, 4, 10, 0));
   var configRule = { type: 'exact', value: 'From Config' };
   var pageRule = { type: 'exact', value: 'From Page' };
   var bothRule = { type: 'exact', value: 'Both' };
@@ -585,7 +601,7 @@ function testIsBlockExpired() {
 }
 
 function testDescribeBlock() {
-  var start = new Date(2026, 10, 4, 10, 0);
+  var start = partsFromDate(new Date(2026, 10, 4, 10, 0));
   return [
     blockResult('describe: title block', 'All events titled "Lecture"',
       describeBlock(buildBlockRule('title', 'Lecture', start))),
@@ -593,5 +609,58 @@ function testDescribeBlock() {
       describeBlock(buildBlockRule('occurrence', 'Lecture', start))),
     blockResult('describe: untitled occurrence block', '(untitled) on 2026-11-04 at 10:00',
       describeBlock(buildBlockRule('occurrence', '', start))),
+  ];
+}
+
+// --- Local start parts -------------------------------------------------------
+
+function testLocalStartParts() {
+  var utc = { dateTime: '2026-11-04T15:30:00Z' };
+  var ny = localStartParts(utc, 'America/New_York');
+  var tokyo = localStartParts(utc, 'Asia/Tokyo');
+  var dst = localStartParts({ dateTime: '2026-03-08T07:30:00Z' }, 'America/New_York');
+  var offset = localStartParts({ dateTime: '2026-11-04T10:30:00-05:00' }, 'America/New_York');
+  var allDayTokyo = localStartParts({ date: '2026-12-25' }, 'Asia/Tokyo');
+  var allDayLa = localStartParts({ date: '2026-12-25' }, 'America/Los_Angeles');
+  var nearMidnight = localStartParts({ dateTime: '2026-11-04T15:05:00Z' }, 'Asia/Tokyo');
+  var block = buildBlockRule('occurrence', 'Late Call', nearMidnight);
+  var run = function (startIso) {
+    return withRules([block], function () {
+      return matchesRules('Late Call', localStartParts({ dateTime: startIso }, 'Asia/Tokyo'));
+    });
+  };
+  return [
+    blockResult('parts: New York date', '2026-11-04', ny.date),
+    blockResult('parts: New York minutes', 630, ny.minutes),
+    blockResult('parts: New York day', 'WE', ny.day),
+    blockResult('parts: Tokyo crosses to the next date', '2026-11-05', tokyo.date),
+    blockResult('parts: Tokyo minutes', 30, tokyo.minutes),
+    blockResult('parts: Tokyo day follows its date', 'TH', tokyo.day),
+    blockResult('parts: daylight saving start', 210, dst.minutes),
+    blockResult('parts: an offset timestamp is the same instant', 630, offset.minutes),
+    blockResult('parts: a timed event is not all-day', false, ny.allDay),
+    blockResult('parts: all-day keeps its date in Tokyo', '2026-12-25', allDayTokyo.date),
+    blockResult('parts: all-day keeps its date in Los Angeles', '2026-12-25', allDayLa.date),
+    blockResult('parts: all-day day code', 'FR', allDayLa.day),
+    blockResult('parts: all-day minutes', 0, allDayLa.minutes),
+    blockResult('parts: all-day flag', true, allDayLa.allDay),
+    blockResult('parts: describes a timed start', '2026-11-04 10:30', describeStart(ny)),
+    blockResult('parts: describes an all-day start', '2026-12-25', describeStart(allDayLa)),
+    blockResult('parts: a block near midnight matches its own event', true, run('2026-11-04T15:05:00Z')),
+    blockResult('parts: and not one a minute later', false, run('2026-11-04T15:06:00Z')),
+    blockResult('parts: and not the same time a day earlier', false, run('2026-11-03T15:05:00Z')),
+    throwsResult('parts: a malformed date is refused', function () { localStartParts({ date: '12/25/2026' }, 'Asia/Tokyo'); }),
+    throwsResult('parts: a malformed dateTime is refused', function () { localStartParts({ dateTime: 'nope' }, 'Asia/Tokyo'); }),
+  ];
+}
+
+function testContainsRule() {
+  var parts = partsFromDate(new Date(2026, 10, 4, 10, 0));
+  var rule = { type: 'contains', value: ' Exam ' };
+  return [
+    blockResult('contains: matches regardless of case', true, ruleMatches(rule, 'Final EXAM review', parts)),
+    blockResult('contains: does not match other text', false, ruleMatches(rule, 'Lecture', parts)),
+    blockResult('contains: respects its limits', false,
+      ruleMatches({ type: 'contains', value: 'exam', days: ['TU'] }, 'Exam', parts)),
   ];
 }

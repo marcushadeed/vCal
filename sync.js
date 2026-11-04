@@ -118,19 +118,24 @@ function collectEvents(windowStart, windowEnd, startedAt) {
     logTiming('list done: ' + source.name + ', ' + items.length + ' event(s)', startedAt);
     items.forEach(function (item) {
       var title = item.summary || '';
+      // Rules follow the user's time zone. The sync key keeps parseEventStart(),
+      // so that it stays stable.
+      var parts = localStartParts(item.start, CONFIG.timeZone);
       var startTime = parseEventStart(item.start);
-      if (matchesRules(title, startTime)) {
+      if (matchesRules(title, parts)) {
         excluded.push({
           title: title,
           startTime: startTime,
+          startLabel: describeStart(parts),
           sourceName: source.name,
-          rule: findMatchingRule(title, startTime),
+          rule: findMatchingRule(title, parts),
         });
       } else {
         included.push({
           item: item,
           title: title,
           startTime: startTime,
+          startLabel: describeStart(parts),
           sourceCalendarId: source.id,
           sourceName: source.name,
           sourceColor: source.color,

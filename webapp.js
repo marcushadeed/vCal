@@ -51,35 +51,34 @@ function getPageData() {
 
 function toPageEvent(item, sourceName, pageRules) {
   var title = item.summary || '';
-  var startTime = parseEventStart(item.start);
-  var allDay = Boolean(item.start.date);
+  var parts = localStartParts(item.start, CONFIG.timeZone);
   return {
     title: title,
     start: item.start.date || item.start.dateTime,
-    startMs: startTime.getTime(),
-    allDay: allDay,
-    day: formatDate(startTime),
-    time: allDay ? '' : formatMinutes(startTime.getHours() * 60 + startTime.getMinutes()),
+    startMs: parseEventStart(item.start).getTime(),
+    allDay: parts.allDay,
+    day: parts.date,
+    time: parts.allDay ? '' : formatMinutes(parts.minutes),
     sourceName: sourceName,
-    blockedBy: classifyEvent(title, startTime, pageRules),
+    blockedBy: classifyEvent(title, parts, pageRules),
   };
 }
 
 // Returns 'config', 'page' or null. Config wins when both match, because the
 // page's undo couldn't bring back an event that config.js also excludes.
-function classifyEvent(title, startTime, pageRules) {
-  if (findMatchingRule(title, startTime)) {
+function classifyEvent(title, parts, pageRules) {
+  if (findMatchingRule(title, parts)) {
     return 'config';
   }
   var blocked = pageRules.some(function (rule) {
-    return ruleMatches(rule, title, startTime);
+    return ruleMatches(rule, title, parts);
   });
   return blocked ? 'page' : null;
 }
 
 function blockEvent(scope, title, start, allDay) {
-  var startTime = parseEventStart(allDay ? { date: start } : { dateTime: start });
-  addBlock(buildBlockRule(scope, title, startTime));
+  var parts = localStartParts(allDay ? { date: start } : { dateTime: start }, CONFIG.timeZone);
+  addBlock(buildBlockRule(scope, title, parts));
 }
 
 function unblock(key) {
