@@ -102,11 +102,6 @@ function collectEvents(windowStart, windowEnd, startedAt) {
   var included = [];
   var excluded = [];
   CONFIG.sourceCalendars.forEach(function (source) {
-    var calendar = CalendarApp.getCalendarById(source.id);
-    if (!calendar) {
-      Logger.log('WARNING: could not find source calendar "' + source.name + '" (' + source.id + '); skipping.');
-      return;
-    }
     // Checked here, once per calendar rather than once per event, so a typo in
     // the config surfaces as one log line instead of failing every write.
     if (source.color && !isValidEventColorId(source.color)) {
@@ -115,23 +110,27 @@ function collectEvents(windowStart, windowEnd, startedAt) {
         '", which is not one of ' + VALID_EVENT_COLOR_IDS.join('/') + '; ignoring it.'
       );
     }
-    // getEvents() expands recurring events into individual instances, so a
-    // weekly meeting becomes one entry per occurrence in this window.
-    logTiming('getEvents start: ' + source.name, startedAt);
-    var events = calendar.getEvents(windowStart, windowEnd);
-    logTiming('getEvents done: ' + source.name + ', ' + events.length + ' event(s)', startedAt);
-    events.forEach(function (event) {
-      var title = event.getTitle();
-      var startTime = event.getStartTime();
+    // Errors are deliberately not caught. Skipping an unreadable calendar would
+    // leave its events out of the desired state, and the diff would then delete
+    // all of their mirrored copies, even on a temporary API error.
+    logTiming('list start: ' + source.name, startedAt);
+    var items = listSourceEvents(source.id, windowStart, windowEnd);
+    logTiming('list done: ' + source.name + ', ' + items.length + ' event(s)', startedAt);
+    items.forEach(function (item) {
+      var title = item.summary || '';
+      var startTime = parseEventStart(item.start);
       if (matchesRules(title, startTime)) {
         excluded.push({
-          event: event,
+          title: title,
+          startTime: startTime,
           sourceName: source.name,
           rule: findMatchingRule(title, startTime),
         });
       } else {
         included.push({
-          event: event,
+          item: item,
+          title: title,
+          startTime: startTime,
           sourceCalendarId: source.id,
           sourceName: source.name,
           sourceColor: source.color,
@@ -143,22 +142,41 @@ function collectEvents(windowStart, windowEnd, startedAt) {
   return { included: included, excluded: excluded };
 }
 
+// Reads a calendar's events and all their fields in one paginated call.
+// singleEvents expands recurring events into individual instances, so a weekly
+// meeting becomes one entry per occurrence in this window. This replaces
+// CalendarApp, whose per-event getters took a run past the 6-minute limit
+// (issue #7).
+function listSourceEvents(calendarId, windowStart, windowEnd) {
+  var items = [];
+  var pageToken = null;
+  do {
+    var response = Calendar.Events.list(calendarId, {
+      timeMin: windowStart.toISOString(),
+      timeMax: windowEnd.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 2500,
+      pageToken: pageToken,
+    });
+    items = items.concat(response.items || []);
+    pageToken = response.nextPageToken;
+  } while (pageToken);
+  return items;
+}
+
 // Turns the included source events into the exact Calendar API resources we
 // want the mirror to contain, keyed by sync key.
 function buildDesiredEvents(included, startedAt) {
   var desired = {};
   included.forEach(function (match, index) {
-    var syncKey = computeSyncKey(
-      match.sourceCalendarId,
-      match.event.getId(),
-      match.event.getStartTime()
-    );
+    var syncKey = computeSyncKey(match.sourceCalendarId, match.item.iCalUID, match.startTime);
 
     // The colour is resolved inside buildEventResource(), i.e. BEFORE the
     // signature is computed from the finished resource. Setting it afterwards
     // would leave a colour change invisible to the diff.
-    var resource = buildEventResource(match.event, match.sourceColor);
-    var signature = computeSignature(resource, match.event.getLastUpdated());
+    var resource = buildEventResource(match.item, match.sourceColor);
+    var signature = computeSignature(resource, match.item.updated ? new Date(match.item.updated) : null);
 
     resource.extendedProperties = {
       private: {},
@@ -175,8 +193,8 @@ function buildDesiredEvents(included, startedAt) {
       signature: signature,
       resource: resource,
       sourceName: match.sourceName,
-      title: match.event.getTitle(),
-      startTime: match.event.getStartTime(),
+      title: match.title,
+      startTime: match.startTime,
       colorId: resource.colorId || '',
     };
 
@@ -188,17 +206,15 @@ function buildDesiredEvents(included, startedAt) {
   return desired;
 }
 
-// Builds the mirrored copy of a source event: every property CalendarApp
-// readily exposes that is safe to copy — title, time, location, description,
-// colour and visibility. Attendees are never copied (CLAUDE.md gotcha #1)
-// and reminders are always cleared (gotcha #2). Setting reminders here
-// rather than with a follow-up removeAllReminders() call keeps this to a
-// single write per event.
-function buildEventResource(source, sourceColor) {
+// Builds the mirrored copy of a source event from its Calendar API item: title,
+// time, location, description, colour and visibility. Attendees are never
+// copied (CLAUDE.md gotcha #1) and reminders are always cleared (gotcha #2).
+// Pure, so it is covered by testBuildEventResource().
+function buildEventResource(item, sourceColor) {
   var resource = {
-    summary: source.getTitle(),
-    location: source.getLocation() || '',
-    description: source.getDescription() || '',
+    summary: item.summary || '',
+    location: item.location || '',
+    description: item.description || '',
     reminders: {
       useDefault: false,
       overrides: [],
@@ -207,30 +223,31 @@ function buildEventResource(source, sourceColor) {
     // Google would send invitations to them on every run, forever.
   };
 
-  // getColor() returns '' when the event uses the calendar's default colour,
+  // An item has no colorId when the event uses the calendar's default colour,
   // in which case the source calendar's configured colour is used so that the
   // mirror still shows which calendar the event came from. The API rejects an
   // empty colorId, so only set it when there is one.
-  var color = resolveColorId(source.getColor(), sourceColor);
+  var color = resolveColorId(item.colorId, sourceColor);
   if (color) {
     resource.colorId = color;
   }
 
-  var visibility = mapVisibility(source.getVisibility());
+  var visibility = mapVisibility(item.visibility);
   if (visibility) {
     resource.visibility = visibility;
   }
 
-  if (source.isAllDayEvent()) {
-    // All-day events use `date`, not `dateTime`. Both CalendarApp's
-    // getAllDayEndDate() and the API's end.date are exclusive (the day after
-    // the event ends), so these map across directly.
-    var timeZone = Session.getScriptTimeZone();
-    resource.start = { date: Utilities.formatDate(source.getAllDayStartDate(), timeZone, 'yyyy-MM-dd') };
-    resource.end = { date: Utilities.formatDate(source.getAllDayEndDate(), timeZone, 'yyyy-MM-dd') };
+  if (item.start.date) {
+    // All-day events use `date`, not `dateTime`. end.date is already exclusive
+    // (the day after the event ends), so it is copied as is.
+    resource.start = { date: item.start.date };
+    resource.end = { date: item.end.date };
   } else {
-    resource.start = { dateTime: source.getStartTime().toISOString() };
-    resource.end = { dateTime: source.getEndTime().toISOString() };
+    // Normalised to UTC because the API returns these with an offset, and
+    // computeSignature() hashes the string: the same instant written another
+    // way would make every mirrored event look changed.
+    resource.start = { dateTime: new Date(item.start.dateTime).toISOString() };
+    resource.end = { dateTime: new Date(item.end.dateTime).toISOString() };
   }
 
   return resource;
@@ -242,10 +259,6 @@ function buildEventResource(source, sourceColor) {
 // configured colour, which is what makes sources distinguishable in the
 // mirror. Returns '' for "leave unset" — the API rejects an empty colorId, so
 // the caller omits the field entirely in that case.
-//
-// Pure, and separate from buildEventResource() for exactly that reason:
-// buildEventResource() calls CalendarApp getters and cannot be unit-tested,
-// this can.
 function resolveColorId(eventColor, sourceColor) {
   if (isValidEventColorId(eventColor)) {
     return String(eventColor);
@@ -265,15 +278,10 @@ function isValidEventColorId(color) {
   return VALID_EVENT_COLOR_IDS.indexOf(String(color)) !== -1;
 }
 
-// CalendarApp's Visibility enum uses upper-case names; the API expects
-// lower-case strings. Returns '' for the default, which is left unset.
+// Returns '' for the default, which is left unset.
 function mapVisibility(visibility) {
-  if (!visibility) {
-    return '';
-  }
-  var name = visibility.toString().toLowerCase();
-  if (name === 'public' || name === 'private' || name === 'confidential') {
-    return name;
+  if (visibility === 'public' || visibility === 'private' || visibility === 'confidential') {
+    return visibility;
   }
   return '';
 }
@@ -396,7 +404,7 @@ function logDryRun(plan, excluded, windowStart, windowEnd) {
   Logger.log('Excluded (blacklisted): ' + excluded.length);
   excluded.forEach(function (match) {
     Logger.log(
-      '  EXCLUDE "' + match.event.getTitle() + '" at ' + match.event.getStartTime() +
+      '  EXCLUDE "' + match.title + '" at ' + match.startTime +
       ' (source: ' + match.sourceName + ', rule: ' + describeRule(match.rule) + ')'
     );
   });
@@ -503,8 +511,8 @@ function finishRun(plan, counts, ranOutOfTime) {
 
 // Stable identity for one source event instance.
 //
-// CalendarApp's getId() returns the event's iCalUID, and every occurrence of
-// a recurring series shares a single iCalUID. The start time is therefore
+// Every occurrence of a recurring series shares a single iCalUID (only the
+// API event ids are distinct). The start time is therefore
 // required to tell instances apart — without it, all ~75 meetings of a
 // recurring course would collapse onto one key.
 //

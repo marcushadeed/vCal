@@ -49,26 +49,6 @@ function getPageData() {
   };
 }
 
-// Uses the advanced service rather than CalendarApp, whose per-event getter
-// calls are slow enough to matter for a page load (see issue #7).
-function listSourceEvents(calendarId, windowStart, windowEnd) {
-  var items = [];
-  var pageToken = null;
-  do {
-    var response = Calendar.Events.list(calendarId, {
-      timeMin: windowStart.toISOString(),
-      timeMax: windowEnd.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 2500,
-      pageToken: pageToken,
-    });
-    items = items.concat(response.items || []);
-    pageToken = response.nextPageToken;
-  } while (pageToken);
-  return items;
-}
-
 function toPageEvent(item, sourceName, pageRules) {
   var title = item.summary || '';
   var startTime = parseEventStart(item.start);

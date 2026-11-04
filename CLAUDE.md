@@ -34,17 +34,23 @@ Two pieces of metadata on every mirrored event make this work, both stored in pr
 - **`gcalDiffSyncKey`** — stable identity of the source instance, `md5(sourceCalendarId, iCalUID, startTime)`. Decides *which* mirrored event corresponds to *which* source instance.
 - **`gcalDiffSignature`** — hash of the event's content. Decides *whether* that mirrored event needs rewriting.
 
-**The start time is mandatory in the sync key.** `CalendarEvent.getId()` returns the event's **iCalUID**, and every occurrence of a recurring series shares a single iCalUID (only the underlying API event ids are distinct). Keying on the UID alone would collapse all ~75 meetings of a recurring course onto one mirrored event.
+**The start time is mandatory in the sync key.** The key uses the event's **`iCalUID`**, and every occurrence of a recurring series shares a single iCalUID (only the API event `id`s are distinct). Keying on the UID alone would collapse all ~75 meetings of a recurring course onto one mirrored event.
 
 A rescheduled source event gets a new sync key, so it shows up as a delete plus a create rather than an update. Slightly less efficient, but it keeps identity fully derivable from the source with no stored mapping to maintain.
 
 Events in the mirror window **without** a sync key — created by hand, or by a pre-incremental version of this script — are treated as untracked and deleted. The mirror calendar is owned by the script.
 
+### Reading Source Events
+Source calendars are read with `listSourceEvents()` (`Calendar.Events.list`), which returns every event and its fields in one paginated call per calendar. **Don't read source events through `CalendarApp`.** Its per-event getters made about 8,000 calls per run, which pushed runs past the 6-minute limit before they reached the runtime guard (issue #7).
+
+- **Normalise before hashing.** The API returns times with an offset, so `buildEventResource()` converts them to UTC. The same instant written another way would change every signature and rewrite the whole mirror.
+- **An unreadable calendar fails the run.** Don't catch list errors in the sync. Skipping a calendar leaves its events out of the desired state, and the diff would then delete all of their mirrored copies, even on a temporary API error.
+
 ### Change Detection
 `computeSignature()` hashes **every readily available property of the source event**, in two layers:
 
 1. **Every mirrored field** — title, location, description, start, end, all-day flag, colour, visibility. A change to any of these changes the hash, and the diff rewrites the copy.
-2. **The source's `getLastUpdated()` timestamp**, as a catch-all. This covers edits to properties the script does not read at all, so a source event can never drift silently out of sync just because the changed field is not one of the ones enumerated above.
+2. **The source item's `updated` timestamp**, as a catch-all. This covers edits to properties the script does not read at all, so a source event can never drift silently out of sync just because the changed field is not one of the ones enumerated above.
 
 Layer 2 means an edit that does not actually affect the mirrored copy still costs one rewrite. That is the intended trade — correctness over saving a write, which incremental reconciliation has made cheap. Be aware that editing one occurrence of a recurring series can bump `lastUpdated` for every occurrence, producing a burst of rewrites on the following run. It is bounded, self-limiting (stable again on the run after), and covered by the runtime guard below.
 
@@ -70,8 +76,8 @@ The mirror calendar receives **copies** of source events, not links. Mirrored ev
 
 1. **Do NOT copy guest lists or attendees.** This will cause Google to send calendar invites to those people every day, forever. Copy title, time, location, description, colour, and visibility only.
 2. **Explicitly set reminders to empty** — `reminders: { useDefault: false, overrides: [] }` in the event resource. If the source event has reminders and you copy them, the user gets double notifications for events they're already invited to.
-3. **Recurring events become individual instances.** `getEvents()` returns expanded events, so a recurring meeting in the source becomes 100+ individual copies in the mirror. This is correct for the use case (filter by title, not structure), and is why the sync key must include the start time.
-4. **All-day events use `date`, not `dateTime`.** Both `getAllDayEndDate()` and the API's `end.date` are exclusive (midnight at the start of the day *after* the event ends), in the script's time zone, so they map across directly.
+3. **Recurring events become individual instances.** `singleEvents: true` returns expanded events, so a recurring meeting in the source becomes 100+ individual copies in the mirror. This is correct for the use case (filter by title, not structure), and is why the sync key must include the start time.
+4. **All-day events use `date`, not `dateTime`.** The API's `end.date` is exclusive (the day *after* the event ends), so it is copied across directly.
 5. **Colour identifies the source calendar.** `resolveColorId()` decides the mirrored event's `colorId`: the source event's own colour override wins when it has one, otherwise the event takes its source calendar's configured `color`, otherwise the field is left unset and the event inherits the mirror calendar's default. It must be resolved *inside* `buildEventResource()`, i.e. before `computeSignature()` runs on the finished resource — setting the colour afterwards would make a colour change invisible to the diff. Note that Google's per-event colours are ids `'1'`-`'11'`, a different set from the 24 calendar colours.
 
 ### Time-Based Filtering
@@ -93,16 +99,17 @@ When an event title has multiple instances per week, use time-based filters to e
 2. **Two scopes.** `'title'` is an exact title rule. `'occurrence'` adds that event's date and a one-minute `time` window. Blocks match on title and start time, so a title block applies across all source calendars, and renaming an event or moving an occurrence breaks its block.
 3. **A title block on an empty title is refused**, because it would block every untitled event.
 4. **All-day starts must go through `parseEventStart()`.** `new Date('2026-12-25')` is UTC midnight, which is Dec 24 in New York.
-5. **The page reads events with `Calendar.Events.list`**, not `CalendarApp`, to keep page loads fast (see issue #7).
+5. **The page reads events with `listSourceEvents()`**, the same as the sync. Unlike the sync, it catches a failed calendar and shows a warning, because a page load can't delete anything.
 6. **Event text is inserted with `textContent`, never `innerHTML`.** Anyone who can edit a shared calendar controls it.
 7. **A corrupt stored block throws**, failing both the sync and the page, so it can't silently change what gets mirrored. Expired occurrence blocks are deleted on page load.
 
 ## Testing
 
-`runTests()` runs **without touching CalendarApp or Script Properties**, so it's fast and safe to run from the Apps Script editor. It covers these pure functions:
+`runTests()` runs **without touching the Calendar API or Script Properties**, so it's fast and safe to run from the Apps Script editor. It covers these pure functions:
 
 - `matchesRules()` — blacklist filtering, including day-, time- and date-constrained rules.
 - `resolveColorId()` — the event override / source-calendar colour precedence, and that out-of-range or non-string colour ids are ignored.
+- `buildEventResource()` — timed and all-day items, missing fields, that attendees are never copied and reminders are cleared, and that an offset timestamp hashes the same as its UTC form.
 - `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys.
 - `computeSignature()` — that a change to each mirrored field is detected, and that an edit to an unmirrored property is still caught via `lastUpdated`.
 - `buildBlockRule()` — that an occurrence block matches only that occurrence, a title block matches every instance, and an empty title is refused. Rules are round-tripped through JSON first, as the store does.
@@ -131,7 +138,7 @@ Copying the guest/attendee list from a source event to the mirror will cause Goo
 If a user is invited to both the source event and the mirrored copy, they receive two notifications if reminders are copied. Always set `reminders: { useDefault: false, overrides: [] }` on every mirrored event, regardless of source reminder settings.
 
 ### 3. Recurring Occurrences Share One iCalUID
-`CalendarEvent.getId()` returns the iCalUID, which is **identical across every occurrence** of a recurring series. Any identity scheme built on it alone will collapse a whole semester of a course onto a single event. The sync key includes the start time for exactly this reason — don't remove it.
+An event's `iCalUID` is **identical across every occurrence** of a recurring series. Any identity scheme built on it alone will collapse a whole semester of a course onto a single event. The sync key includes the start time for exactly this reason — don't remove it.
 
 ### 4. Empty Rules List Mirrors Everything, Not Nothing
 Rules are a blacklist, so an empty `rules: []` array excludes nothing — **every** event from **every** source calendar will be mirrored. This is the opposite of the old whitelist default (empty = mirror nothing). Always review dry-run output before setting `DRY_RUN = false`, especially on a config that hasn't had exclusion rules added yet.

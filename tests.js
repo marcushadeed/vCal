@@ -133,6 +133,7 @@ function runTests() {
     .concat(testComputeSyncKey())
     .concat(testComputeSignature())
     .concat(testResolveColorId())
+    .concat(testBuildEventResource())
     .concat(testBuildBlockRule())
     .concat(testParseEventStart())
     .concat(testClassifyEvent())
@@ -323,9 +324,9 @@ function testComputeSignature() {
   });
 }
 
-// resolveColorId() is the pure half of the colour handling; the CalendarApp
-// getters that feed it live in buildEventResource(), which cannot be tested
-// here. '' means "leave colorId unset", i.e. the mirror calendar's default.
+// resolveColorId() decides the colour on its own; testBuildEventResource()
+// covers it being applied to the finished resource. '' means "leave colorId
+// unset", i.e. the mirror calendar's default.
 function testResolveColorId() {
   var cases = [
     {
@@ -388,6 +389,68 @@ function testResolveColorId() {
       passed: actual === testCase.expected,
     };
   });
+}
+
+// --- Building the mirrored copy ----------------------------------------------
+//
+// The input is a Calendar API event item. The signature case matters most: the
+// API returns times with an offset, and if those reached computeSignature()
+// unnormalised, every mirrored event would look changed.
+
+var SAMPLE_TIMED_ITEM = {
+  iCalUID: SAMPLE_ICAL_UID,
+  summary: 'Chemistry Lecture',
+  location: 'Chem 1407',
+  description: 'Bring the lab notebook',
+  start: { dateTime: '2026-09-01T10:00:00-04:00', timeZone: 'America/New_York' },
+  end: { dateTime: '2026-09-01T11:00:00-04:00', timeZone: 'America/New_York' },
+  colorId: '5',
+  visibility: 'private',
+  attendees: [{ email: 'someone@example.com' }],
+  reminders: { useDefault: true },
+};
+
+var SAMPLE_ALL_DAY_ITEM = {
+  iCalUID: SAMPLE_ICAL_UID,
+  summary: 'Fall Break',
+  start: { date: '2026-10-01' },
+  end: { date: '2026-10-03' },
+};
+
+var SAMPLE_BARE_ITEM = {
+  iCalUID: SAMPLE_ICAL_UID,
+  start: { dateTime: '2026-09-01T14:00:00Z' },
+  end: { dateTime: '2026-09-01T15:00:00Z' },
+  visibility: 'default',
+};
+
+function testBuildEventResource() {
+  var timed = buildEventResource(SAMPLE_TIMED_ITEM, '9');
+  var allDay = buildEventResource(SAMPLE_ALL_DAY_ITEM, undefined);
+  var bare = buildEventResource(SAMPLE_BARE_ITEM, undefined);
+  var bareWithCalendarColor = buildEventResource(SAMPLE_BARE_ITEM, '9');
+
+  return [
+    blockResult('resource: a timed start becomes a UTC timestamp', '2026-09-01T14:00:00.000Z', timed.start.dateTime),
+    blockResult('resource: a timed end becomes a UTC timestamp', '2026-09-01T15:00:00.000Z', timed.end.dateTime),
+    blockResult('resource: an offset start hashes the same as its UTC form',
+      computeSignature(cloneResource(), SAMPLE_LAST_UPDATED),
+      computeSignature(timed, SAMPLE_LAST_UPDATED)),
+    blockResult('resource: an all-day start keeps its date', '2026-10-01', allDay.start.date),
+    blockResult('resource: an all-day end keeps its exclusive date', '2026-10-03', allDay.end.date),
+    blockResult('resource: an all-day start has no dateTime', false, 'dateTime' in allDay.start),
+    blockResult('resource: a missing title becomes empty', '', bare.summary),
+    blockResult('resource: a missing location becomes empty', '', bare.location),
+    blockResult('resource: a missing description becomes empty', '', bare.description),
+    blockResult('resource: attendees are never copied', false, 'attendees' in timed),
+    blockResult('resource: reminders are always cleared', '{"useDefault":false,"overrides":[]}',
+      JSON.stringify(timed.reminders)),
+    blockResult('resource: the event colour wins over the calendar colour', '5', timed.colorId),
+    blockResult('resource: an event with no colour takes the calendar colour', '9', bareWithCalendarColor.colorId),
+    blockResult('resource: no colour at all leaves colorId unset', false, 'colorId' in bare),
+    blockResult('resource: private visibility is kept', 'private', timed.visibility),
+    blockResult('resource: default visibility is left unset', false, 'visibility' in bare),
+  ];
 }
 
 // --- Page-made blocks --------------------------------------------------------
