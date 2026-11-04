@@ -41,6 +41,7 @@
     h1 { margin: 0; font-size: 20px; }
     h2 { margin: 24px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); font-size: 15px; }
     h3 { margin: 16px 0 4px; color: var(--muted); font-size: 13px; }
+    p { margin: 4px 0 8px; }
     button {
       padding: 3px 8px;
       border: 1px solid var(--line);
@@ -53,7 +54,7 @@
       cursor: pointer;
     }
     button:disabled { opacity: 0.5; cursor: default; }
-    input {
+    input, select {
       width: 100%;
       padding: 6px 8px;
       border: 1px solid var(--line);
@@ -62,6 +63,13 @@
       color: inherit;
       font: inherit;
     }
+    input[type="checkbox"] { width: auto; margin: 0 4px 0 0; }
+    select { width: auto; }
+    label { color: var(--muted); font-size: 12px; }
+    label input, label select { display: block; color: var(--text); font-size: 14px; }
+    label.check { display: inline-flex; align-items: center; color: inherit; font-size: 14px; }
+    label.check input { display: inline; }
+    summary { padding: 4px 0; cursor: pointer; }
     .muted { color: var(--muted); }
     .notice { margin: 12px 0 0; padding: 8px 12px; border-radius: 4px; overflow-wrap: anywhere; }
     .error { background: var(--error-bg); color: var(--error-text); }
@@ -71,37 +79,69 @@
     .row .time { width: 52px; color: var(--muted); font-variant-numeric: tabular-nums; }
     .row .actions { display: flex; flex-wrap: wrap; gap: 4px; }
     .blocked .main { color: var(--muted); }
+    .fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; padding: 4px 0; }
+    .fields label { flex: 1 1 120px; min-width: 0; }
+    .fields label.check { flex: 0 0 auto; }
+    .fields label.wide { flex: 1 1 100%; }
+    .picker-name { flex: 1 1 160px; min-width: 0; }
+    .form { margin-top: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; }
+    .disclosure { margin-top: 32px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
     [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <header>
-    <h1>vCal blocks</h1>
+    <h1>vCal</h1>
     <span class="muted">Changes apply at the next sync</span>
   </header>
 
   <div id="error" class="notice error" role="alert" hidden></div>
+  <div id="progress" class="notice warning" role="status" hidden>Working. This can take a few minutes.</div>
   <div id="warnings"></div>
 
-  <h2>Your blocks</h2>
-  <div id="blocks" class="muted">Loading...</div>
+  <div id="loading" class="muted">Loading...</div>
+  <div id="setup" hidden></div>
+  <div id="main" hidden></div>
 
-  <h2>Upcoming</h2>
-  <input id="search" type="search" placeholder="Search by title" aria-label="Search upcoming events by title">
-  <div id="events" class="muted">Loading...</div>
+  <p class="disclosure">vCal runs on its owner's Apps Script project. The owner can see when your syncs ran, and controls the code that can read and change your calendars. Google's error messages, which the owner can see, may include calendar IDs.</p>
 
   <script>
+    var DAY_LABELS = [
+      ['SU', 'Sun'], ['MO', 'Mon'], ['TU', 'Tue'], ['WE', 'Wed'], ['TH', 'Thu'], ['FR', 'Fri'], ['SA', 'Sat'],
+    ];
+    var FREQUENCY_LABELS = { daily: 'Daily', every6h: 'Every 6 hours', hourly: 'Hourly' };
+    var MATCH_LABELS = [
+      ['exact', 'Exact title'], ['contains', 'Title contains'], ['regex', 'Regex (advanced)'], ['any', 'Any title'],
+    ];
+    var ANY_TITLE_PATTERN = '.*';
+
     var data = null;
     var busy = false;
+    var working = false;
+
+    // Everything typed into the page lives here rather than in the inputs, because
+    // each render rebuilds them. A failed save must keep what the user typed.
+    var ruleForm = emptyRuleForm();
+    var sourceDraft = null;
+    var sourceDraftDirty = false;
+    var lookaheadDraft = null;
+    var frequencyDraft = null;
+    var searchQuery = '';
+
+    // Kept here and not reloaded. Cleared by anything that could make it out of date.
+    var previewResult = null;
 
     var errorEl = document.getElementById('error');
+    var progressEl = document.getElementById('progress');
     var warningsEl = document.getElementById('warnings');
-    var blocksEl = document.getElementById('blocks');
-    var eventsEl = document.getElementById('events');
-    var searchEl = document.getElementById('search');
+    var loadingEl = document.getElementById('loading');
+    var setupEl = document.getElementById('setup');
+    var mainEl = document.getElementById('main');
+    var eventsEl = null;
+    var ruleFormEl = null;
 
-    // All event text goes through textContent, never innerHTML, because anyone
-    // who can edit a shared calendar controls it.
+    // All calendar and rule text goes through textContent, because anyone who can
+    // edit a shared calendar controls it.
     function el(tag, className, text) {
       var node = document.createElement(tag);
       if (className) node.className = className;
@@ -127,6 +167,51 @@
       errorEl.hidden = false;
     }
 
+    function labelled(text, control, className) {
+      var node = el('label', className);
+      node.appendChild(document.createTextNode(text));
+      node.appendChild(control);
+      return node;
+    }
+
+    function textInput(value, onInput, type) {
+      var node = el('input');
+      node.type = type || 'text';
+      node.value = value;
+      node.addEventListener('input', function () {
+        onInput(node.value);
+      });
+      return node;
+    }
+
+    function checkbox(text, checked, onChange) {
+      var input = el('input');
+      input.type = 'checkbox';
+      input.checked = checked;
+      input.addEventListener('change', function () {
+        onChange(input.checked);
+      });
+      var node = el('label', 'check');
+      node.appendChild(input);
+      node.appendChild(document.createTextNode(text));
+      return node;
+    }
+
+    // `options` is a list of [value, label].
+    function dropdown(options, value, onChange) {
+      var node = el('select');
+      options.forEach(function (option) {
+        var item = el('option', '', option[1]);
+        item.value = option[0];
+        node.appendChild(item);
+      });
+      node.value = value;
+      node.addEventListener('change', function () {
+        onChange(node.value);
+      });
+      return node;
+    }
+
     function formatDay(day) {
       var parts = day.split('-');
       return new Date(parts[0], parts[1] - 1, parts[2]).toLocaleDateString(undefined, {
@@ -134,38 +219,432 @@
       });
     }
 
-    function renderWarnings() {
-      clear(warningsEl);
-      data.warnings.forEach(function (warning) {
-        warningsEl.appendChild(el('div', 'notice warning', warning));
+    function hasMirror() {
+      return Boolean(data.settings.mirrorCalendarId) && !data.settings.mirrorMissing;
+    }
+
+    function currentFrequency() {
+      return frequencyDraft || data.settings.frequency;
+    }
+
+    // --- Calendars ---------------------------------------------------------------
+
+    // A stored source that's no longer in the user's calendar list stays in the
+    // picker. It's the one a failed run names, and this is how it gets removed.
+    function buildSourceDraft() {
+      var stored = {};
+      data.settings.sourceCalendars.forEach(function (source) {
+        stored[source.id] = source;
+      });
+      var draft = data.calendars.map(function (calendar) {
+        var source = stored[calendar.id];
+        delete stored[calendar.id];
+        return {
+          id: calendar.id,
+          checked: Boolean(source),
+          name: source ? source.name : calendar.name,
+          color: source && source.color ? source.color : '',
+        };
+      });
+      data.settings.sourceCalendars.forEach(function (source) {
+        if (stored[source.id]) {
+          draft.push({ id: source.id, checked: true, name: source.name, color: source.color || '', unlisted: true });
+        }
+      });
+      return draft;
+    }
+
+    function sourcesFromDraft() {
+      return sourceDraft.filter(function (entry) {
+        return entry.checked;
+      }).map(function (entry) {
+        var source = { id: entry.id, name: entry.name };
+        if (entry.color) source.color = entry.color;
+        return source;
       });
     }
 
-    function renderBlocks() {
-      clear(blocksEl);
-      if (data.blocks.length === 0) {
-        blocksEl.className = 'muted';
-        blocksEl.textContent = 'Nothing blocked from this page yet.';
+    function renderSourcePicker(parent) {
+      if (sourceDraft.length === 0) {
+        parent.appendChild(el('p', 'muted', 'No calendars found.'));
         return;
       }
-      data.blocks.forEach(function (block) {
+      var colorOptions = [['', 'Calendar default']].concat(data.colors.map(function (color) {
+        return [color.id, color.name];
+      }));
+      sourceDraft.forEach(function (entry) {
         var row = el('div', 'row');
-        row.appendChild(el('span', 'main', block.description));
-        row.appendChild(button('Unblock', function () {
-          act('unblock', [block.key]);
-        }));
-        blocksEl.appendChild(row);
+        var use = checkbox('', entry.checked, function (checked) {
+          entry.checked = checked;
+          sourceDraftDirty = true;
+        });
+        use.firstChild.setAttribute('aria-label', 'Copy from ' + entry.name);
+        row.appendChild(use);
+        var name = textInput(entry.name, function (value) {
+          entry.name = value;
+          sourceDraftDirty = true;
+        });
+        name.className = 'picker-name';
+        name.setAttribute('aria-label', 'Name for this calendar');
+        row.appendChild(name);
+        var color = dropdown(colorOptions, entry.color, function (value) {
+          entry.color = value;
+          sourceDraftDirty = true;
+        });
+        color.setAttribute('aria-label', 'Colour for this calendar');
+        row.appendChild(color);
+        if (entry.unlisted) {
+          row.appendChild(el('span', 'muted', 'No longer in your calendar list'));
+        }
+        parent.appendChild(row);
       });
+      parent.appendChild(button('Save calendars', function () {
+        act('saveSources', [sourcesFromDraft()], function () {
+          sourceDraftDirty = false;
+        });
+      }));
+    }
+
+    function createMirrorButton() {
+      return button('Create mirror calendar', function () {
+        act('createMirrorCalendar', []);
+      });
+    }
+
+    // --- Rules -------------------------------------------------------------------
+
+    function emptyRuleForm() {
+      return {
+        oldKey: null, match: 'exact', text: '', insensitive: false, days: [],
+        timeStart: '', timeEnd: '', dateStart: '', dateEnd: '',
+      };
+    }
+
+    function ruleFormFromRule(key, rule) {
+      var form = emptyRuleForm();
+      form.oldKey = key;
+      if (rule.type === 'regex' && rule.value === ANY_TITLE_PATTERN && !rule.flags) {
+        form.match = 'any';
+      } else {
+        form.match = rule.type;
+        form.text = rule.value;
+      }
+      form.insensitive = rule.flags === 'i';
+      form.days = (rule.days || []).slice();
+      if (rule.time) {
+        form.timeStart = rule.time.start;
+        form.timeEnd = rule.time.end;
+      }
+      if (rule.date) {
+        form.dateStart = rule.date.start;
+        form.dateEnd = rule.date.end;
+      }
+      return form;
+    }
+
+    // The server validates this, and its errors appear in the banner.
+    function ruleFromForm(form) {
+      var rule;
+      if (form.match === 'any') {
+        rule = { type: 'regex', value: ANY_TITLE_PATTERN };
+      } else {
+        rule = { type: form.match, value: form.text };
+        if (form.match === 'regex' && form.insensitive) rule.flags = 'i';
+      }
+      if (form.days.length > 0) rule.days = form.days.slice();
+      if (form.timeStart || form.timeEnd) rule.time = { start: form.timeStart, end: form.timeEnd };
+      if (form.dateStart || form.dateEnd) rule.date = { start: form.dateStart, end: form.dateEnd };
+      return rule;
+    }
+
+    function renderRuleList(parent) {
+      if (data.rules.length === 0) {
+        parent.appendChild(el('p', 'muted', 'No rules yet. Every event in your source calendars will be mirrored.'));
+        return;
+      }
+      data.rules.forEach(function (entry) {
+        var row = el('div', 'row');
+        row.appendChild(el('span', 'main', entry.description));
+        var actions = el('span', 'actions');
+        actions.appendChild(button('Edit', function () {
+          ruleForm = ruleFormFromRule(entry.key, entry.rule);
+          renderRuleForm();
+          ruleFormEl.scrollIntoView();
+        }));
+        actions.appendChild(button('Delete', function () {
+          act('deleteRule', [entry.key], function () {
+            // The form may be editing the rule that's now gone.
+            if (ruleForm.oldKey === entry.key) ruleForm = emptyRuleForm();
+          });
+        }));
+        row.appendChild(actions);
+        parent.appendChild(row);
+      });
+    }
+
+    function renderRuleForm() {
+      var form = ruleForm;
+      clear(ruleFormEl);
+      ruleFormEl.className = 'form';
+      ruleFormEl.appendChild(el('h3', '', form.oldKey ? 'Edit rule' : 'Add a rule'));
+      ruleFormEl.appendChild(el('p', 'muted', 'Events matching a rule are left out of your mirror.'));
+
+      var titleFields = el('div', 'fields');
+      titleFields.appendChild(labelled('Match', dropdown(MATCH_LABELS, form.match, function (value) {
+        form.match = value;
+        renderRuleForm();
+      })));
+      if (form.match !== 'any') {
+        titleFields.appendChild(labelled(form.match === 'regex' ? 'Pattern' : 'Title', textInput(form.text, function (value) {
+          form.text = value;
+        })));
+      }
+      if (form.match === 'regex') {
+        titleFields.appendChild(checkbox('Case-insensitive', form.insensitive, function (checked) {
+          form.insensitive = checked;
+        }));
+      }
+      ruleFormEl.appendChild(titleFields);
+
+      var dayFields = el('div', 'fields');
+      DAY_LABELS.forEach(function (day) {
+        dayFields.appendChild(checkbox(day[1], form.days.indexOf(day[0]) !== -1, function (checked) {
+          form.days = form.days.filter(function (code) {
+            return code !== day[0];
+          });
+          if (checked) form.days.push(day[0]);
+        }));
+      });
+      ruleFormEl.appendChild(dayFields);
+
+      var limitFields = el('div', 'fields');
+      limitFields.appendChild(labelled('From time (HH:MM)', textInput(form.timeStart, function (value) {
+        form.timeStart = value;
+      })));
+      limitFields.appendChild(labelled('To time (HH:MM)', textInput(form.timeEnd, function (value) {
+        form.timeEnd = value;
+      })));
+      limitFields.appendChild(labelled('From date', textInput(form.dateStart, function (value) {
+        form.dateStart = value;
+      }, 'date')));
+      limitFields.appendChild(labelled('To date', textInput(form.dateEnd, function (value) {
+        form.dateEnd = value;
+      }, 'date')));
+      ruleFormEl.appendChild(limitFields);
+      ruleFormEl.appendChild(el('p', 'muted', 'Days, times and dates are optional, and use your calendar\'s time zone (' + data.timeZone + ').'));
+
+      var actions = el('div', 'row');
+      actions.appendChild(button(form.oldKey ? 'Save rule' : 'Add rule', function () {
+        act('saveRule', [ruleFromForm(form), form.oldKey], function () {
+          ruleForm = emptyRuleForm();
+        });
+      }));
+      if (form.oldKey) {
+        actions.appendChild(button('Cancel', function () {
+          ruleForm = emptyRuleForm();
+          renderRuleForm();
+        }));
+      }
+      ruleFormEl.appendChild(actions);
+    }
+
+    function appendRuleForm(parent) {
+      ruleFormEl = el('div', 'form');
+      parent.appendChild(ruleFormEl);
+      renderRuleForm();
+    }
+
+    // --- Preview -----------------------------------------------------------------
+
+    function runPreview() {
+      runLong('previewSync', function (result) {
+        if (result.error) {
+          showError(result.error);
+          return;
+        }
+        previewResult = result.preview;
+      });
+    }
+
+    function previewRow(entry) {
+      var row = el('div', 'row');
+      row.appendChild(el('span', 'main', entry.title || '(untitled)'));
+      row.appendChild(el('span', 'muted', entry.start));
+      row.appendChild(el('span', 'muted', entry.source));
+      row.appendChild(el('span', 'muted', entry.reason));
+      return row;
+    }
+
+    function appendPreviewList(parent, label, entries, open) {
+      if (entries.length === 0) return;
+      var details = el('details');
+      details.open = Boolean(open);
+      details.appendChild(el('summary', '', label + ' (' + entries.length + ')'));
+      entries.forEach(function (entry) {
+        details.appendChild(previewRow(entry));
+      });
+      parent.appendChild(details);
+    }
+
+    function renderPreview(parent) {
+      if (!previewResult) return;
+      var counts = previewResult.counts;
+      parent.appendChild(el('h3', '', 'Preview. Nothing has been changed.'));
+      parent.appendChild(el('p', '', counts.creates + ' to add, ' + counts.updates + ' to update, ' +
+        counts.deletes + ' to delete, ' + counts.unchanged + ' unchanged, ' + counts.excluded + ' excluded by rules.'));
+      appendPreviewList(parent, 'To delete', previewResult.deletes, true);
+      appendPreviewList(parent, 'To add', previewResult.creates);
+      appendPreviewList(parent, 'To update', previewResult.updates);
+      appendPreviewList(parent, 'Excluded by rules', previewResult.excludes);
+    }
+
+    // --- Sync --------------------------------------------------------------------
+
+    function frequencyDropdown() {
+      var options = Object.keys(FREQUENCY_LABELS).map(function (key) {
+        return [key, FREQUENCY_LABELS[key]];
+      });
+      return labelled('How often', dropdown(options, currentFrequency(), function (value) {
+        frequencyDraft = value;
+      }));
+    }
+
+    function turnOnButton() {
+      var node = button('Turn on sync', function () {
+        act('turnOnSync', [currentFrequency()], function () {
+          frequencyDraft = null;
+        });
+      });
+      node.disabled = busy || !data.settings.previewed;
+      return node;
+    }
+
+    // --- First run ---------------------------------------------------------------
+
+    function renderSetup() {
+      setupEl.appendChild(el('h2', '', '1. Create your mirror calendar'));
+      if (hasMirror()) {
+        setupEl.appendChild(el('p', 'muted', 'Your mirror calendar is ready.'));
+      } else {
+        setupEl.appendChild(el('p', '', 'vCal copies events into a new calendar of its own. vCal owns that calendar, so anything you add to it by hand gets deleted.'));
+        setupEl.appendChild(createMirrorButton());
+      }
+
+      setupEl.appendChild(el('h2', '', '2. Pick your source calendars'));
+      setupEl.appendChild(el('p', 'muted', 'Tick the calendars to copy from. You can rename each one and choose a colour for its events in the mirror.'));
+      renderSourcePicker(setupEl);
+
+      setupEl.appendChild(el('h2', '', '3. Add rules (optional)'));
+      renderRuleList(setupEl);
+      appendRuleForm(setupEl);
+
+      setupEl.appendChild(el('h2', '', '4. Preview'));
+      setupEl.appendChild(el('p', 'muted', 'See what a sync would do. This changes nothing.'));
+      if (sourceDraftDirty) {
+        setupEl.appendChild(el('p', 'muted', 'You have unsaved calendar changes. Save them first to include them.'));
+      }
+      setupEl.appendChild(button('Preview', runPreview));
+      renderPreview(setupEl);
+
+      setupEl.appendChild(el('h2', '', '5. Turn on sync'));
+      if (!data.settings.previewed) {
+        setupEl.appendChild(el('p', 'muted', 'Run a preview first.'));
+      }
+      var fields = el('div', 'fields');
+      fields.appendChild(frequencyDropdown());
+      setupEl.appendChild(fields);
+      setupEl.appendChild(turnOnButton());
+    }
+
+    // --- After setup -------------------------------------------------------------
+
+    function statusLine(label, value) {
+      var row = el('div', 'row');
+      var name = el('span', 'muted', label);
+      name.style.width = '120px';
+      row.appendChild(name);
+      row.appendChild(el('span', 'main', value));
+      return row;
+    }
+
+    function renderStatus(parent) {
+      var settings = data.settings;
+      var status = data.status;
+      parent.appendChild(el('h2', '', 'Status'));
+      if (data.stale) {
+        parent.appendChild(el('div', 'notice warning', 'vCal hasn\'t recorded a sync when one was expected. The app may be unavailable, so ask its owner to check it.'));
+      }
+      parent.appendChild(statusLine('Sync', settings.enabled ? 'On' : 'Paused'));
+      parent.appendChild(statusLine('How often', FREQUENCY_LABELS[settings.frequency]));
+      parent.appendChild(statusLine('Last run', status ? new Date(status.lastRunAt).toLocaleString() : 'Not yet'));
+      if (status && !status.error) {
+        parent.appendChild(statusLine('Changes', status.created + ' added, ' + status.updated + ' updated, ' +
+          status.deleted + ' deleted, ' + status.unchanged + ' unchanged'));
+        if (status.deferred > 0) {
+          parent.appendChild(statusLine('Deferred', status.deferred + ' left for the next run. Use Sync now to finish sooner.'));
+        }
+      }
+      if (status && status.error) {
+        parent.appendChild(el('div', 'notice error', status.error));
+      }
+
+      var actions = el('div', 'row');
+      actions.appendChild(button('Preview', runPreview));
+      var syncButton = button('Sync now', function () {
+        runLong('syncNow');
+      });
+      syncButton.disabled = busy || !settings.previewed;
+      actions.appendChild(syncButton);
+      if (settings.enabled) {
+        actions.appendChild(button('Pause', function () {
+          act('pauseSync', []);
+        }));
+      } else {
+        actions.appendChild(frequencyDropdown());
+        actions.appendChild(turnOnButton());
+      }
+      parent.appendChild(actions);
+      renderPreview(parent);
+    }
+
+    function renderCalendars(parent) {
+      parent.appendChild(el('h2', '', 'Calendars'));
+      if (!hasMirror()) {
+        parent.appendChild(el('div', 'notice warning', 'Your mirror calendar is missing, so vCal can\'t sync. If you deleted it, create a new one. vCal owns that calendar, so anything you add to it by hand gets deleted.'));
+        var mirrorRow = el('div', 'row');
+        mirrorRow.appendChild(createMirrorButton());
+        parent.appendChild(mirrorRow);
+      }
+      renderSourcePicker(parent);
+
+      var lookahead = lookaheadDraft === null ? String(data.settings.lookaheadDays) : lookaheadDraft;
+      var fields = el('div', 'fields');
+      var input = textInput(lookahead, function (value) {
+        lookaheadDraft = value;
+      }, 'number');
+      fields.appendChild(labelled('Days to look ahead (1 to 365)', input));
+      fields.appendChild(button('Save days', function () {
+        act('saveLookaheadDays', [input.value], function () {
+          lookaheadDraft = null;
+        });
+      }));
+      parent.appendChild(fields);
+    }
+
+    function renderRules(parent) {
+      parent.appendChild(el('h2', '', 'Rules'));
+      renderRuleList(parent);
+      appendRuleForm(parent);
     }
 
     function renderEventRow(event) {
-      var row = el('div', event.blockedBy ? 'row blocked' : 'row');
+      var row = el('div', event.blocked ? 'row blocked' : 'row');
       row.appendChild(el('span', 'time', event.allDay ? 'All day' : event.time));
       row.appendChild(el('span', 'main', event.title || '(untitled)'));
       row.appendChild(el('span', 'muted', event.sourceName));
 
-      if (event.blockedBy) {
-        row.appendChild(el('span', 'muted', event.blockedBy === 'page' ? 'blocked by you' : 'blocked by config.js'));
+      if (event.blocked) {
+        row.appendChild(el('span', 'muted', 'blocked by a rule'));
         return row;
       }
 
@@ -185,7 +664,7 @@
 
     function renderEvents() {
       clear(eventsEl);
-      var query = searchEl.value.trim().toLowerCase();
+      var query = searchQuery.trim().toLowerCase();
       var matches = data.events.filter(function (event) {
         return event.title.toLowerCase().indexOf(query) !== -1;
       });
@@ -205,26 +684,67 @@
       });
     }
 
-    function render() {
-      renderWarnings();
-      renderBlocks();
+    function renderUpcoming(parent) {
+      parent.appendChild(el('h2', '', 'Upcoming'));
+      var search = textInput(searchQuery, function (value) {
+        searchQuery = value;
+        renderEvents();
+      }, 'search');
+      search.placeholder = 'Search by title';
+      search.setAttribute('aria-label', 'Search upcoming events by title');
+      parent.appendChild(search);
+      eventsEl = el('div');
+      parent.appendChild(eventsEl);
       renderEvents();
+    }
+
+    function renderMain() {
+      renderStatus(mainEl);
+      renderCalendars(mainEl);
+      renderRules(mainEl);
+      renderUpcoming(mainEl);
+    }
+
+    // --- Page --------------------------------------------------------------------
+
+    function renderWarnings() {
+      clear(warningsEl);
+      data.warnings.forEach(function (warning) {
+        warningsEl.appendChild(el('div', 'notice warning', warning));
+      });
+    }
+
+    function render() {
+      var inSetup = !data.settings.enabled && !data.status;
+      loadingEl.hidden = true;
+      renderWarnings();
+      clear(setupEl);
+      clear(mainEl);
+      setupEl.hidden = !inSetup;
+      mainEl.hidden = inSetup;
+      if (inSetup) {
+        renderSetup();
+      } else {
+        renderMain();
+      }
     }
 
     function setBusy(value) {
       busy = value;
+      progressEl.hidden = !working;
       if (data) render();
     }
 
-    // Failures show the banner and leave the list as it was.
+    // Failures show the banner and leave everything as it was.
     function callServer(name, args, onSuccess) {
       var runner = google.script.run
         .withSuccessHandler(onSuccess)
         .withFailureHandler(function (error) {
+          working = false;
           showError(error);
           if (!data) {
-            blocksEl.textContent = 'Could not load.';
-            eventsEl.textContent = 'Could not load.';
+            errorEl.textContent += ' If you\'re signed in to more than one Google account, try an incognito window or sign out of the others.';
+            loadingEl.textContent = 'Could not load.';
           }
           setBusy(false);
         });
@@ -234,20 +754,35 @@
     function refresh() {
       callServer('getPageData', [], function (result) {
         data = result;
+        if (!sourceDraftDirty) sourceDraft = buildSourceDraft();
         setBusy(false);
       });
     }
 
     // Every action reloads from the server, so there is only one code path.
-    function act(name, args) {
+    // `onDone` runs only on success, before the reload.
+    function act(name, args, onDone) {
       errorEl.hidden = true;
       setBusy(true);
-      callServer(name, args, refresh);
+      callServer(name, args, function (result) {
+        previewResult = null;
+        if (onDone) onDone(result);
+        refresh();
+      });
     }
 
-    searchEl.addEventListener('input', function () {
-      if (data) renderEvents();
-    });
+    // The same, for calls that can take minutes.
+    function runLong(name, onDone) {
+      errorEl.hidden = true;
+      working = true;
+      previewResult = null;
+      setBusy(true);
+      callServer(name, [], function (result) {
+        working = false;
+        if (onDone) onDone(result);
+        refresh();
+      });
+    }
 
     refresh();
   </script>
