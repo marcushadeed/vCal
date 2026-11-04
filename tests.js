@@ -138,9 +138,13 @@ function runTests() {
     .concat(testParseEventStart())
     .concat(testClassifyEvent())
     .concat(testIsBlockExpired())
-    .concat(testDescribeBlock())
+    .concat(testDescribeOccurrenceRule())
     .concat(testLocalStartParts())
-    .concat(testContainsRule());
+    .concat(testContainsRule())
+    .concat(testValidateRule())
+    .concat(testNormalizeAndCompileRule())
+    .concat(testParseStoredRule())
+    .concat(testDescribeRule());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -600,15 +604,15 @@ function testIsBlockExpired() {
   ];
 }
 
-function testDescribeBlock() {
+function testDescribeOccurrenceRule() {
   var start = partsFromDate(new Date(2026, 10, 4, 10, 0));
   return [
     blockResult('describe: title block', 'All events titled "Lecture"',
-      describeBlock(buildBlockRule('title', 'Lecture', start))),
+      describeRule(buildBlockRule('title', 'Lecture', start))),
     blockResult('describe: occurrence block', '"Lecture" on 2026-11-04 at 10:00',
-      describeBlock(buildBlockRule('occurrence', 'Lecture', start))),
+      describeRule(buildBlockRule('occurrence', 'Lecture', start))),
     blockResult('describe: untitled occurrence block', '(untitled) on 2026-11-04 at 10:00',
-      describeBlock(buildBlockRule('occurrence', '', start))),
+      describeRule(buildBlockRule('occurrence', '', start))),
   ];
 }
 
@@ -662,5 +666,88 @@ function testContainsRule() {
     blockResult('contains: does not match other text', false, ruleMatches(rule, 'Lecture', parts)),
     blockResult('contains: respects its limits', false,
       ruleMatches({ type: 'contains', value: 'exam', days: ['TU'] }, 'Exam', parts)),
+  ];
+}
+
+// --- Rule validation and storage ---------------------------------------------
+
+function testValidateRule() {
+  var bad = [
+    ['an unknown type', { type: 'fuzzy', value: 'a' }],
+    ['an empty contains', { type: 'contains', value: '  ' }],
+    ['an empty regex', { type: 'regex', value: '' }],
+    ['an invalid regex', { type: 'regex', value: '(' }],
+    ['the g flag', { type: 'regex', value: 'a', flags: 'g' }],
+    ['the y flag', { type: 'regex', value: 'a', flags: 'y' }],
+    ['a blank exact title with no date', { type: 'exact', value: ' ' }],
+    ['any title with no limits', { type: 'regex', value: '.*' }],
+    // Ticking "case-insensitive" must not get around the refusal above.
+    ['any title with no limits and the i flag', { type: 'regex', value: '.*', flags: 'i' }],
+    ['an unknown day', { type: 'exact', value: 'a', days: ['XX'] }],
+    ['empty days', { type: 'exact', value: 'a', days: [] }],
+    ['a malformed time', { type: 'exact', value: 'a', time: { start: '9am', end: '10:00' } }],
+    ['an impossible time', { type: 'exact', value: 'a', time: { start: '25:00', end: '26:00' } }],
+    ['a time with start after end', { type: 'exact', value: 'a', time: { start: '10:00', end: '09:00' } }],
+    ['a time with start equal to end', { type: 'exact', value: 'a', time: { start: '09:00', end: '09:00' } }],
+    ['a malformed date', { type: 'exact', value: 'a', date: { start: '12/25/2026', end: '12/25/2026' } }],
+    ['an impossible date', { type: 'exact', value: 'a', date: { start: '2026-02-31', end: '2026-02-31' } }],
+    ['a date with start after end', { type: 'exact', value: 'a', date: { start: '2026-12-26', end: '2026-12-25' } }],
+  ];
+  var good = [
+    ['exact', { type: 'exact', value: 'Lecture' }],
+    ['contains', { type: 'contains', value: 'exam' }],
+    ['case-insensitive regex', { type: 'regex', value: '^Lab', flags: 'i' }],
+    ['any title with a date', { type: 'regex', value: '.*', date: { start: '2026-12-25', end: '2026-12-25' } }],
+    ['any title with days', { type: 'regex', value: '.*', days: ['SA', 'SU'] }],
+    ['an untitled occurrence', { type: 'exact', value: '', date: { start: '2026-11-04', end: '2026-11-04' }, time: { start: '10:00', end: '10:01' } }],
+    ['a window ending at 24:00', { type: 'exact', value: 'a', time: { start: '23:59', end: '24:00' } }],
+  ];
+  var leaked = 'no error';
+  try {
+    validateRule({ type: 'exact', value: 'PRIVATE-TITLE', date: { start: 'PRIVATE-DATE', end: 'PRIVATE-DATE' } });
+  } catch (e) {
+    leaked = e.message.indexOf('PRIVATE') === -1 ? 'clean' : 'leaked';
+  }
+  return bad.map(function (c) {
+    return throwsResult('validate: refuses ' + c[0], function () { validateRule(c[1]); });
+  }).concat(good.map(function (c) {
+    validateRule(c[1]);
+    return blockResult('validate: accepts ' + c[0], true, true);
+  })).concat([blockResult('validate: errors do not repeat the rule', 'clean', leaked)]);
+}
+
+function testNormalizeAndCompileRule() {
+  var a = normalizeRule({ days: ['MO', 'SU'], value: 'a', extra: 1, flags: '', type: 'contains' });
+  var b = normalizeRule({ type: 'contains', value: 'a', days: ['SU', 'MO'] });
+  var parts = partsFromDate(new Date(2026, 10, 4, 10, 0));
+  var compiled = compileRule(JSON.parse(JSON.stringify({ type: 'regex', value: '^lab', flags: 'i' })));
+  return [
+    blockResult('normalize: equal rules give the same JSON', JSON.stringify(b), JSON.stringify(a)),
+    blockResult('normalize: days follow DAY_CODES order', 'SU,MO', a.days.join(',')),
+    blockResult('normalize: unknown keys are dropped', false, 'extra' in a),
+    blockResult('compile: a stored regex matches', true, ruleMatches(compiled, 'LAB 3', parts)),
+    blockResult('compile: repeat matches stay true', true, ruleMatches(compiled, 'LAB 3', parts)),
+    blockResult('compile: an exact rule is unchanged', 'x', compileRule({ type: 'exact', value: 'x' }).value),
+  ];
+}
+
+function testParseStoredRule() {
+  return [
+    blockResult('stored: reads a valid rule', 'a', parseStoredRule('{"type":"exact","value":"a"}').value),
+    blockResult('stored: corrupt JSON is unreadable', null, parseStoredRule('{ not json')),
+    blockResult('stored: a rule that fails validation is unreadable', null, parseStoredRule('{"type":"regex","value":"("}')),
+  ];
+}
+
+function testDescribeRule() {
+  var limits = { days: ['MO', 'WE'], time: { start: '09:00', end: '10:00' } };
+  var withLimits = { type: 'exact', value: 'Standup', days: limits.days, time: limits.time };
+  var range = { type: 'regex', value: '.*', date: { start: '2026-12-21', end: '2027-01-01' } };
+  return [
+    blockResult('describe: contains', 'Titles containing "exam"', describeRule({ type: 'contains', value: 'exam' })),
+    blockResult('describe: stored regex', 'Titles matching /^Lab/i', describeRule({ type: 'regex', value: '^Lab', flags: 'i' })),
+    blockResult('describe: compiled regex', 'Titles matching /^Lab/i', describeRule(compileRule({ type: 'regex', value: '^Lab', flags: 'i' }))),
+    blockResult('describe: limits', 'All events titled "Standup", on MO, WE, from 09:00 to 10:00', describeRule(withLimits)),
+    blockResult('describe: any title with a range', 'All events, 2026-12-21 to 2027-01-01', describeRule(range)),
   ];
 }

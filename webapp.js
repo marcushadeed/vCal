@@ -11,10 +11,10 @@ function doGet() {
 // here rather than in the browser, so they use the script time zone that rules
 // are evaluated in.
 function getPageData() {
-  pruneExpiredBlocks();
-  var blocks = loadBlocks();
+  pruneExpiredRules(Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'));
+  var blocks = loadStoredRules();
   var pageRules = blocks.map(function (block) {
-    return block.rule;
+    return compileRule(block.rule);
   });
 
   var windowStart = new Date();
@@ -39,7 +39,7 @@ function getPageData() {
   return {
     blocks: blocks
       .map(function (block) {
-        return { key: block.key, description: describeBlock(block.rule) };
+        return { key: block.key, description: describeRule(block.rule) };
       })
       .sort(function (a, b) {
         return a.description < b.description ? -1 : 1;
@@ -78,9 +78,9 @@ function classifyEvent(title, parts, pageRules) {
 
 function blockEvent(scope, title, start, allDay) {
   var parts = localStartParts(allDay ? { date: start } : { dateTime: start }, CONFIG.timeZone);
-  addBlock(buildBlockRule(scope, title, parts));
+  addRule(buildBlockRule(scope, title, parts));
 }
 
 function unblock(key) {
-  removeBlock(key);
+  removeRule(key);
 }

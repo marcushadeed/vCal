@@ -49,7 +49,7 @@ function ruleMatchesTitle(rule, title) {
   if (rule.type === 'regex') {
     return rule.value.test(title);
   }
-  throw new Error('Unknown rule type: ' + rule.type);
+  throw new Error('Unknown rule type.');
 }
 
 function ruleMatchesDay(rule, parts) {
@@ -89,7 +89,7 @@ function ruleMatchesDate(rule, parts) {
 // events, so fail the run instead.
 function assertValidDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new Error('Invalid date in rule: "' + value + '". Expected YYYY-MM-DD.');
+    throw new Error('Invalid date. Expected YYYY-MM-DD.');
   }
 }
 
@@ -126,4 +126,134 @@ function dayCodeOf(date) {
 // '2026-11-04 10:30', or '2026-11-04' when all-day.
 function describeStart(parts) {
   return parts.allDay ? parts.date : parts.date + ' ' + formatMinutes(parts.minutes);
+}
+
+// --- Validation ---------------------------------------------------------------
+//
+// Rules come from the page and are the only thing limiting what gets mirrored,
+// so they are checked before they are stored and again when they are read.
+// Errors reach the owner's logs, so they never repeat any part of the rule.
+
+var RULE_TYPES = ['exact', 'contains', 'regex'];
+
+function validateRule(rule) {
+  if (!rule || typeof rule !== 'object' || RULE_TYPES.indexOf(rule.type) === -1) {
+    throw new Error('Choose how to match the title.');
+  }
+  validateRuleTitle(rule);
+  if (rule.days !== undefined) {
+    validateRuleDays(rule.days);
+  }
+  if (rule.time !== undefined) {
+    validateRuleTime(rule.time);
+  }
+  if (rule.date !== undefined) {
+    validateRuleDate(rule.date);
+  }
+  // It would match every event, emptying the mirror at the next sync. The flags
+  // don't matter here: this pattern matches everything with or without them.
+  if (rule.type === 'regex' && rule.value === '.*' && !rule.days && !rule.time && !rule.date) {
+    throw new Error('A rule for any title needs a day, time or date limit, or it would empty your mirror.');
+  }
+}
+
+function validateRuleTitle(rule) {
+  if (typeof rule.value !== 'string') {
+    throw new Error('Enter a title.');
+  }
+  // Only a single-occurrence block may have a blank title: a blank exact rule
+  // with no date would match every untitled event, forever.
+  if (rule.value.trim() === '' && !(rule.type === 'exact' && rule.date)) {
+    throw new Error('Enter a title.');
+  }
+  // g and y make RegExp.test() keep state between calls, which would skip matches.
+  if (rule.flags !== undefined && rule.flags !== '' && rule.flags !== 'i') {
+    throw new Error('The only regex option is case-insensitive.');
+  }
+  if (rule.type === 'regex') {
+    try {
+      new RegExp(rule.value, rule.flags || '');
+    } catch (e) {
+      throw new Error('That regular expression is not valid.');
+    }
+  }
+}
+
+function validateRuleDays(days) {
+  var known = Array.isArray(days) && days.length > 0 && days.every(function (day) {
+    return DAY_CODES.indexOf(day) !== -1;
+  });
+  if (!known) {
+    throw new Error('Choose valid days.');
+  }
+}
+
+function validateRuleTime(time) {
+  if (!time || !isValidTime(time.start) || !isValidTime(time.end)) {
+    throw new Error('Enter times as HH:MM, from 00:00 to 24:00.');
+  }
+  if (parseTimeToMinutes(time.start) >= parseTimeToMinutes(time.end)) {
+    throw new Error('The start time must be before the end time.');
+  }
+}
+
+function isValidTime(value) {
+  if (typeof value !== 'string' || !/^\d{2}:\d{2}$/.test(value)) {
+    return false;
+  }
+  var minutes = parseInt(value.substring(3), 10);
+  return minutes < 60 && parseTimeToMinutes(value) <= 24 * 60;
+}
+
+function validateRuleDate(date) {
+  if (!date || !isRealDate(date.start) || !isRealDate(date.end)) {
+    throw new Error('Enter real dates as YYYY-MM-DD.');
+  }
+  if (date.end < date.start) {
+    throw new Error('The end date must not be before the start date.');
+  }
+}
+
+function isRealDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  var pieces = value.split('-').map(function (piece) {
+    return parseInt(piece, 10);
+  });
+  var date = new Date(Date.UTC(pieces[0], pieces[1] - 1, pieces[2]));
+  return date.getUTCFullYear() === pieces[0] &&
+    date.getUTCMonth() === pieces[1] - 1 &&
+    date.getUTCDate() === pieces[2];
+}
+
+// A copy in one fixed shape, so equal rules give the same JSON and the same
+// storage key.
+function normalizeRule(rule) {
+  var normalized = { type: rule.type, value: rule.value };
+  if (rule.flags) {
+    normalized.flags = rule.flags;
+  }
+  if (rule.days) {
+    normalized.days = DAY_CODES.filter(function (day) {
+      return rule.days.indexOf(day) !== -1;
+    });
+  }
+  if (rule.time) {
+    normalized.time = { start: rule.time.start, end: rule.time.end };
+  }
+  if (rule.date) {
+    normalized.date = { start: rule.date.start, end: rule.date.end };
+  }
+  return normalized;
+}
+
+// Stored rules hold a regex as text, because a RegExp survives neither JSON nor
+// google.script.run. Matching needs the real thing.
+function compileRule(storedRule) {
+  var compiled = normalizeRule(storedRule);
+  if (compiled.type === 'regex') {
+    compiled.value = new RegExp(storedRule.value, storedRule.flags || '');
+  }
+  return compiled;
 }

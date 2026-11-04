@@ -55,9 +55,7 @@ function mirrorCalendarSync() {
     );
   }
 
-  // Blocks made from the web page. Globals are fresh each execution, so this
-  // lasts only for this run.
-  CONFIG.rules = CONFIG.rules.concat(loadBlockRules());
+  CONFIG.rules = loadRules();
 
   var startedAt = Date.now();
   logTiming('run start', startedAt);
@@ -431,24 +429,6 @@ function describeColor(colorId) {
   }
   var name = EVENT_COLOR_NAMES[String(colorId)];
   return name ? name + ' (' + colorId + ')' : String(colorId);
-}
-
-function describeRule(rule) {
-  if (!rule) {
-    return 'unknown';
-  }
-  var value = rule.value instanceof RegExp ? rule.value.toString() : '"' + rule.value + '"';
-  var desc = rule.type + ' ' + value;
-  if (rule.days) {
-    desc += ', days=' + rule.days.join(',');
-  }
-  if (rule.time) {
-    desc += ', time=' + rule.time.start + '-' + rule.time.end;
-  }
-  if (rule.date) {
-    desc += ', date=' + rule.date.start + ' to ' + rule.date.end;
-  }
-  return desc;
 }
 
 // Applies the plan, stopping cleanly if the run approaches the Apps Script
