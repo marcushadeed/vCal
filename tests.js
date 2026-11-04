@@ -157,10 +157,6 @@ function runTests() {
 }
 
 function testMatchesRules() {
-  if (typeof CONFIG === 'undefined') {
-    throw new Error('CONFIG is not defined. Copy config.example.js to config.js before running tests.');
-  }
-
   // Swap in fixture rules for the duration of the test run, then restore
   // whatever the user's real config had — this keeps matchesRules()'s
   // two-argument signature while testing against known fixtures rather
