@@ -1,15 +1,11 @@
-// Test harness for matchesRules(). Runs without touching CalendarApp, so
-// it's safe and fast to run from the Apps Script editor before enabling
-// the schedule trigger.
+// runTests() covers the pure functions. It touches no Calendar API or stored
+// properties, so it's safe and fast to run, either in the Apps Script editor or
+// with: TZ=America/New_York node dev/run-tests.js
 //
 // Rules are a BLACKLIST: matchesRules() returning true means the title/time
 // matched an exclusion rule and should be filtered OUT of the mirror.
 // `expected: true` below means "this event is excluded"; `expected: false`
 // means "this event is mirrored" (the default for anything not matched).
-//
-// PLACEHOLDER FIXTURES: TEST_RULES and TEST_CASES below use made-up titles
-// and times. Replace them with real titles (and real recurrence times)
-// from your source calendars before trusting these results.
 
 var TEST_RULES = [
   { type: 'exact', value: 'All-Hands Meeting' },
@@ -463,9 +459,9 @@ function testBuildEventResource() {
 
 // --- Page-made blocks --------------------------------------------------------
 //
-// These cover only the pure half of blocks.js and webapp.js. The Script
-// Properties store is deliberately not touched here, so running the tests can
-// never alter real blocks.
+// These cover only the pure half of blocks.js and webapp.js. The User Properties
+// store is deliberately not touched here, so running the tests can never alter
+// real rules.
 
 function blockResult(description, expected, actual) {
   return { description: description, expected: expected, actual: actual, passed: actual === expected };

@@ -1,6 +1,5 @@
-// Main sync entry point. Wire this to a time-driven trigger manually from
-// the Apps Script UI once dry-run output has been reviewed and confirmed —
-// do not add the trigger in code.
+// The sync. mirrorCalendarSync() is the trigger entry point, and the page creates
+// each user's trigger once they've seen a preview.
 //
 // Reconciliation is INCREMENTAL: each mirrored event carries a stable
 // identity and a content signature in its private extended properties, so a
@@ -115,6 +114,13 @@ function buildSyncPlan(startedAt) {
     plan.deletes.length + ' delete(s), ' + plan.unchanged + ' unchanged',
     startedAt
   );
+  // Deletes come from the mirror, so they need local times for the page. Only
+  // deletes, because a steady-state run shouldn't format every mirrored event.
+  plan.deletes.forEach(function (entry) {
+    if (entry.rawStart) {
+      entry.startLabel = describeStart(localStartParts(entry.rawStart, CONFIG.timeZone));
+    }
+  });
   return { plan: plan, excluded: partitioned.excluded };
 }
 
@@ -402,7 +408,7 @@ function fetchMirrorIndex(windowStart, windowEnd) {
         sourceName: privateProps[SOURCE_TAG_KEY] || 'unknown',
         title: item.summary,
         start: (item.start && (item.start.dateTime || item.start.date)) || 'unknown',
-        startLabel: item.start ? describeStart(localStartParts(item.start, CONFIG.timeZone)) : '',
+        rawStart: item.start,
         colorId: item.colorId || '',
       };
       if (syncKey) {

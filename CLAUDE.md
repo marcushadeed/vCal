@@ -3,23 +3,32 @@
 ## Language & Runtime
 - **No ES6 modules**. No `import`, `export`, or `require()`. Every `.gs` file is concatenated into one global namespace.
 - **V8 runtime only**. Apps Script will use the V8 engine; legacy Rhino is not an option.
-- **No external npm packages** at runtime. No test frameworks. Tests are a plain function `runTests()` executed manually in the editor.
+- **No external npm packages** at runtime. No test frameworks. Tests are a plain function `runTests()`, run with `TZ=America/New_York node dev/run-tests.js` or in the editor.
+- **`dev/` may use Node APIs**, for the local test runner and the migration snippets. `.claspignore` keeps it out of Apps Script, and nothing outside it may depend on it.
 - **Keep source files plain ASCII.** Control characters must be written with `String.fromCharCode()`, never embedded literally — a raw byte in a `.js` file survives neither editors nor `clasp push` reliably. `FIELD_SEPARATOR` in `sync.js` is the one place this comes up.
 
 ## Architecture
 
 ### Filter Logic
-Rules are a **blacklist**, not a whitelist: every event is mirrored by default, and rules describe the events to *exclude*. The core filter is a **pure function** of the event's title and start time, returning `true` when the event matches an exclusion rule and should be filtered **out** of the mirror:
+Rules are a **blacklist**, not a whitelist: every event is mirrored by default, and rules describe the events to *exclude*. The core filter is a **pure function** of the event's title and local start parts, returning `true` when the event matches an exclusion rule and should be filtered **out** of the mirror:
 
 ```javascript
-function matchesRules(title, startTime) {
+function matchesRules(title, parts) {
+  // parts: { date: 'YYYY-MM-DD', day: 'MO', minutes: Number, allDay: Boolean }, from localStartParts()
   // Pure: no side effects, no dependency on external state besides CONFIG.rules
   // Testable in isolation
   // Returns true when the event matches a blacklist rule (i.e. should be excluded)
 }
 ```
 
-This allows testing against sample titles and times without touching CalendarApp or running the full sync. An event is mirrored when `matchesRules()` returns `false`. The start time is a parameter (rather than read from an event object) specifically to keep the function pure — `days`, `time` and `date` rules need it.
+This allows testing against sample titles and times without touching the Calendar API or running the full sync. An event is mirrored when `matchesRules()` returns `false`. Rule types are `exact` (trimmed), `contains` (trimmed and case-insensitive) and `regex`.
+
+### Time Zones
+Rule times follow each user's time zone, but a `Date`'s getters always use the script's. So rules never see a `Date`.
+
+- `localStartParts(start, timeZone)` turns an API `start` into plain local parts. A `dateTime` is formatted once with `Utilities.formatDate()`. A `date` is used as is, with `minutes: 0`, and its weekday comes from `Date.UTC`, so no conversion can move it.
+- The time zone comes from the user's primary calendar, read once per entry point by `loadSettings()`.
+- **`computeSyncKey()` keeps using `parseEventStart()`.** The script's time zone is fixed, so all-day keys stay stable. Changing this would rebuild every mirror.
 
 ### Reconciliation Strategy
 Reconciliation is **incremental**. Each run computes the desired state, compares it against what the mirror already contains, and writes only the difference. A steady-state day typically writes **nothing at all**.
@@ -59,17 +68,20 @@ Apps Script kills an execution at **6 minutes**, for consumer *and* Google Works
 
 This is safe precisely because reconciliation is incremental and recomputed from scratch every run: a partial run leaves the mirror in a valid intermediate state and the next run finishes the job. Creates and updates run **before** deletes so that running out of time leaves the mirror with extra stale events rather than missing ones.
 
-The first run after a large config change (or the first run on an empty mirror) may take several passes to converge. Run `mirrorCalendarSync()` manually a few times to converge immediately rather than waiting for the daily trigger.
+The first run after a large change (or the first run on an empty mirror) may take several passes to converge. **Sync now** on the page runs one immediately rather than waiting for the trigger.
 
-### Dry Run Mode
-A module-level constant `DRY_RUN = true` at the top of `sync.js`. When true, log the plan and make **no writes**:
-- A one-line summary: counts of creates, updates, deletes, unchanged, and rule-excluded.
-- Intended **creates** with title, start time, source calendar, and resolved colour.
-- Intended **updates** with title, start time, source, resolved colour, and what the mirrored copy currently says (including its current colour).
-- Intended **deletes** with title, date, source, and why (no longer in source, vs. untracked).
-- Intended **excludes** (source events filtered out by a blacklist rule) with title, start time, source, and the matching rule.
+### Preview and Sync Lifecycle
+`buildSyncPlan()` computes the plan for both **Preview** and a real sync, so they can't disagree.
 
-Default to `true`. Review the log, then set it to `false` and re-run after confirming the behavior is correct.
+- **Preview** (`previewSync()`) writes nothing to any calendar. It returns `summarizePlan()` to the page: counts, plus creates, updates, deletes and excludes, each with title, start, source and reason. It sets `previewed`.
+- **Turn on sync** (`turnOnSync()`) requires `previewed`. It replaces any existing trigger, and creates one for the chosen frequency.
+- **Pause** (`pauseSync()`) deletes the trigger and clears `enabled`.
+- **Sync now** (`syncNow()`) requires `previewed`, and works while paused.
+- `mirrorCalendarSync()` returns immediately when `enabled` is unset, so a leftover trigger can't write anything.
+- `runSync()` holds `LockService.getUserLock()`, because **Sync now** can overlap a scheduled run. A run that can't get the lock returns `null` without error.
+- Every run records its result in the `status` property. Failures are recorded, then rethrown.
+- `assertReadyToSync()` refuses to preview or sync with no mirror or no sources. **No sources would give an empty desired state, and the diff would delete the whole mirror.**
+- `isRunStale()` drives the page's overdue warning. Turning off link sharing makes triggers fail before our code runs, so nothing can be recorded and stored errors aren't enough.
 
 ### Event Handling
 The mirror calendar receives **copies** of source events, not links. Mirrored events are written through the **advanced Calendar service** (`Calendar.Events.insert` / `.update` / `.remove`), not `CalendarApp`, so that reminders and extended properties are set in the same call that creates the event — one write per event instead of three.
@@ -83,51 +95,68 @@ The mirror calendar receives **copies** of source events, not links. Mirrored ev
 ### Time-Based Filtering
 When an event title has multiple instances per week, use time-based filters to exclude only the specific instance(s) you don't want mirrored, leaving the rest of that title's instances to pass through by default:
 
-1. **Time rules in config.js** — Each title rule can have an optional `time` property specifying the excluded time window:
+1. **Time limits on rules** — Rules come from the page's form. Each can have an optional `time` property specifying the excluded time window. Stored rules are plain JSON, so a regex is text, and `loadRules()` compiles it for `CONFIG.rules`:
    ```javascript
    { type: 'exact', value: 'Team Standup', time: { start: '09:00', end: '10:00' } }
-   { type: 'regex', value: /Roadmap/, time: { start: '14:00', end: '15:30' } }
+   { type: 'regex', value: 'Roadmap', flags: 'i', time: { start: '14:00', end: '15:30' } }
    ```
-2. **Time format** — 24-hour HH:MM format. Times are evaluated against the event's start time in the user's calendar timezone.
+2. **Time format** — 24-hour HH:MM format, from `00:00` to `24:00`. Times are evaluated against the event's start time in the user's calendar timezone.
 3. **Logic** — An event matches a blacklist rule (and is excluded) when its title matches AND (if `days`/`time`/`date` are specified) its start day/time/date falls within those constraints. An event that matches no rule is mirrored by default.
 4. **Overlap handling** — If an event matches multiple exclusion rules, it is still excluded only once — exclusion is a boolean outcome, so no special de-duplication is needed.
 
-### Page-Made Blocks
-`index.html` and `webapp.js` are a web app for blocking events without editing `config.js`. `CONFIG` is fixed at push time, so blocks live in Script Properties (`blocks.js`). They are **ordinary rules**, in the same shape as `CONFIG.rules`, and `mirrorCalendarSync()` merges them in at the start of each run. `matchesRules()` and the dry-run log need no second code path, and the existing diff deletes blocked copies and recreates unblocked ones.
+### Rule Store
+`blocks.js` is the rule store. Rules from the page's form and from its **Block this** and **Block all titled this** buttons are one list, in User Properties, per user. `loadSettings()` compiles them into `CONFIG.rules` at the start of every entry point, so `matchesRules()` needs no second code path, and the existing diff deletes newly excluded copies and recreates ones no longer excluded.
 
-1. **One property per block**, keyed `block:<md5 of the rule JSON>`. This avoids the 9KB-per-value limit and means two saves can't overwrite each other. Don't move them into a single shared value.
-2. **Two scopes.** `'title'` is an exact title rule. `'occurrence'` adds that event's date and a one-minute `time` window. Blocks match on title and start time, so a title block applies across all source calendars, and renaming an event or moving an occurrence breaks its block.
-3. **A title block on an empty title is refused**, because it would block every untitled event.
-4. **All-day starts must go through `parseEventStart()`.** `new Date('2026-12-25')` is UTC midnight, which is Dec 24 in New York.
-5. **The page reads events with `listSourceEvents()`**, the same as the sync. Unlike the sync, it catches a failed calendar and shows a warning, because a page load can't delete anything.
-6. **Event text is inserted with `textContent`, never `innerHTML`.** Anyone who can edit a shared calendar controls it.
-7. **A corrupt stored block throws**, failing both the sync and the page, so it can't silently change what gets mirrored. Expired occurrence blocks are deleted on page load.
+1. **One property per rule**, keyed `rule:<md5 of the normalized rule JSON>`. This avoids the 9KB-per-value limit and means two saves can't overwrite each other. Don't move them into a single shared value.
+2. **`validateRule()` runs before storing and when loading.** It checks for a known type, a non-empty value, a compilable regex, valid day codes, `HH:MM` times with start before end, and real dates with start not after end. Its errors never repeat the value.
+3. **An "Any title" rule (regex `.*`) with no limit is refused**, because it would empty the mirror at the next sync.
+4. **`flags` is only ever `''` or `'i'`.** `g` and `y` make `RegExp.test()` keep state between calls, which would skip matches.
+5. **Two kinds of block.** **Block all titled this** is an exact title rule, and is refused on an empty title, because it would block every untitled event. **Block this** adds that event's date and a one-minute `time` window. Rules match on title and start time, so a rule applies across all source calendars, and renaming an event or moving an occurrence breaks its block.
+6. **Editing writes the new rule, then deletes the old one**, since keys are content hashes. An edit that changes nothing gives the same key, which `replaceRule()` must not delete.
+7. **All-day starts must go through `localStartParts()` or `parseEventStart()`.** `new Date('2026-12-25')` is UTC midnight, which is Dec 24 in New York.
+8. **The page reads events with `listSourceEvents()`**, the same as the sync. Unlike the sync, it catches a failed calendar and shows a warning, because a page load can't delete anything.
+9. **Event text is inserted with `textContent`, never `innerHTML`.** Anyone who can edit a shared calendar controls it.
+10. **An unreadable stored rule is deleted when rules load**, with only a count logged. Users have no editor to repair one, and the worst outcome is that its events return to the mirror. Rules whose date range has passed are deleted on page load, using the user's time zone.
+11. **The page always receives the stored form**, because a `RegExp` can't pass through `google.script.run`.
+
+### Calendars
+**Create mirror calendar** is the only way to set a mirror on the page, because the sync deletes everything in the mirror without a sync key. Users can't point it at an existing calendar. `loadSettings()` refuses a mirror that is the primary calendar or is also a source. Sources come from a picker backed by `Calendar.CalendarList.list`, which leaves out the mirror but keeps any stored source that is no longer listed, so it can be removed.
 
 ## Testing
 
-`runTests()` runs **without touching the Calendar API or Script Properties**, so it's fast and safe to run from the Apps Script editor. It covers these pure functions:
+`TZ=America/New_York node dev/run-tests.js` runs `runTests()` locally. It needs only Node, and it also compiles the page's inline script. Run it in a second time zone too, such as `TZ=Asia/Tokyo`, when changing anything about dates or times. The runner has stubs only for `Logger`, `console` and `Utilities`, so a test that touches `PropertiesService`, `Calendar`, `ScriptApp`, `LockService` or `CalendarApp` fails with a `ReferenceError`. It never loads `config.js`.
 
-- `matchesRules()` — blacklist filtering, including day-, time- and date-constrained rules.
+`runTests()` runs **without touching the Calendar API or User Properties**, so it's fast and safe to run from the Apps Script editor too. It covers these pure functions:
+
+- `matchesRules()` and `ruleMatches()` — blacklist filtering, including `contains` and day-, time- and date-constrained rules.
+- `localStartParts()` and `describeStart()` — time zones, daylight saving, all-day events, and a block made near midnight matching only its own event.
+- `validateRule()`, `normalizeRule()`, `compileRule()`, `parseStoredRule()` and `describeRule()` — what's accepted and refused, that errors don't repeat the rule, and regex rules surviving JSON.
 - `resolveColorId()` — the event override / source-calendar colour precedence, and that out-of-range or non-string colour ids are ignored.
 - `buildEventResource()` — timed and all-day items, missing fields, that attendees are never copied and reminders are cleared, and that an offset timestamp hashes the same as its UTC form.
 - `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys.
 - `computeSignature()` — that a change to each mirrored field is detected, and that an edit to an unmirrored property is still caught via `lastUpdated`.
 - `buildBlockRule()` — that an occurrence block matches only that occurrence, a title block matches every instance, and an empty title is refused. Rules are round-tripped through JSON first, as the store does.
-- `parseEventStart()`, `classifyEvent()`, `isBlockExpired()` and `describeBlock()` — the rest of the page's pure logic.
+- `assertSafeMirror()`, `assertReadyToSync()`, `isMirrorMissing()`, `validateLookaheadDays()` and `validateSources()` — the settings safety checks.
+- `isRunStale()`, `summarizePlan()`, `finishRun()`, `describeRunError()` and `tagSourceError()` — the lifecycle's pure logic, including that a rethrown error's message holds no calendar name.
+- `parseEventStart()` and `isBlockExpired()` — the rest of the store's pure logic.
 
 Anything added to `computeSignature()` needs a corresponding case in `testComputeSignature()`; a field that is hashed but untested will silently stop triggering updates if it is ever dropped.
 
+The DOM has no automated tests. Behaviour on the page and against live Google services is checked by hand, using the steps in `docs/superpowers/specs/2026-11-04-shared-link-design.md`.
+
 ## Scheduled Trigger
 
-The entry point is `function mirrorCalendarSync()`. This function:
-1. Loads config (will fail helpfully if CONFIG is not defined — user will see the error immediately), and merges in blocks made from the web page
-2. Fetches events from all source calendars within the date window
-3. Filters out events matching a blacklist rule; everything else passes through
-4. Builds the desired state, reads the mirror's current state, and diffs them
-5. If `DRY_RUN === true`, logs the plan and returns
-6. If `DRY_RUN === false`, applies creates, updates, and deletes — stopping early if the run approaches the execution limit
+The trigger's entry point is `function mirrorCalendarSync()`. **The page creates and deletes each user's trigger**, through **Turn on sync** and **Pause**. `getProjectTriggers()` and triggers are per-user. A trigger runs the deployed version, not the latest push, and an existing trigger picks up a new deployment with no restart.
 
-Add a time-driven trigger only after manual testing confirms the output is correct. **Do not set the trigger in code** — the user will add it from the Apps Script UI after reviewing logs.
+A run:
+1. Returns immediately if `enabled` is unset
+2. Takes the user lock, or exits without error
+3. Loads settings and rules with `loadSettings()`, and refuses to continue without a mirror and at least one source
+4. Fetches events from all source calendars within the date window
+5. Filters out events matching a blacklist rule; everything else passes through
+6. Builds the desired state, reads the mirror's current state, and diffs them
+7. Applies creates, updates, and deletes, stopping early if the run approaches the execution limit
+8. Records the result in `status`
 
 ## Critical Gotchas
 
@@ -141,28 +170,35 @@ If a user is invited to both the source event and the mirrored copy, they receiv
 An event's `iCalUID` is **identical across every occurrence** of a recurring series. Any identity scheme built on it alone will collapse a whole semester of a course onto a single event. The sync key includes the start time for exactly this reason — don't remove it.
 
 ### 4. Empty Rules List Mirrors Everything, Not Nothing
-Rules are a blacklist, so an empty `rules: []` array excludes nothing — **every** event from **every** source calendar will be mirrored. This is the opposite of the old whitelist default (empty = mirror nothing). Always review dry-run output before setting `DRY_RUN = false`, especially on a config that hasn't had exclusion rules added yet.
+Rules are a blacklist, so an empty rule list excludes nothing — **every** event from **every** source calendar will be mirrored. This is the opposite of the old whitelist default (empty = mirror nothing). The page requires a **Preview** before **Turn on sync** or **Sync now**, so users see this before anything is written.
 
 ### 5. The Mirror Calendar Is Owned By The Script
 Events added to the mirror by hand have no sync key and will be deleted on the next run. Don't use the mirror calendar as a place to keep your own events.
 
 ## Configuration
 
-`config.js` (created by user from `config.example.js`) contains:
-- `mirrorCalendarId`: Target calendar ID
-- `sourceCalendars`: Array of `{ id, name, color? }` objects. `color` is an optional event-colour id (`'1'`-`'11'`) applied to every event mirrored from that calendar, so sources stay distinguishable in the mirror. An id outside that range is ignored with a warning logged once per calendar; the API rejects invalid ids outright, which would otherwise fail every write in the run.
-- `rules`: Array of **exclusion** (blacklist) rule objects. An event is mirrored **unless** it matches at least one rule. Each rule has:
-  - `type`: `'exact'` (string match) or `'regex'` (pattern match)
-  - `value`: String or RegExp to match against event title
+Everything users edit lives on the page, and is stored per user in User Properties (`settings.js`). `var CONFIG` always exists, with empty defaults, and `loadSettings()` fills it at the start of every entry point.
+
+- The `settings` property holds JSON:
+  - `mirrorCalendarId`: Set only by **Create mirror calendar**.
+  - `sourceCalendars`: Array of `{ id, name, color? }` objects. `color` is an optional event-colour id (`'1'`-`'11'`) applied to every event mirrored from that calendar, so sources stay distinguishable in the mirror. `validateSources()` refuses an id outside that range, because the API rejects invalid ids outright, which would fail every write in the run.
+  - `lookaheadDays`: Number of days to look ahead, from 1 to 365 (default 180), to avoid fetching infinitely recurring events.
+  - `previewed`, `enabled`, `enabledAt`, `frequency`: The sync lifecycle. `frequency` is `daily`, `every6h` or `hourly`.
+- The `status` property holds JSON: `lastRunAt`, `created`, `updated`, `deleted`, `unchanged`, `deferred` and `error`.
+- Rules are in `rule:` properties. See Rule Store. Each has:
+  - `type`: `'exact'`, `'contains'` or `'regex'`
+  - `value`: Text to match against the event title. For `regex`, the pattern as text.
+  - `flags` (optional, `regex` only): `'i'` for case-insensitive.
   - `days` (optional): Array of day codes (`['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA']`). If present, only instances starting on one of these days are excluded by this rule.
   - `time` (optional): Time window object with `start` and `end` in 24-hour format (HH:MM). If present, only events with start times within this window are excluded by this rule.
-  - `date` (optional): Date range object with `start` and `end` in `YYYY-MM-DD` format, both inclusive. If present, only events starting within this range are excluded by this rule. A malformed date throws and fails the run, since it would otherwise silently exclude the wrong events. A rule always needs a title matcher, so use `{ type: 'regex', value: /.*/, date: ... }` to exclude every event in a range.
-- `lookaheadDays`: Number of days to look ahead (default 180) to avoid fetching infinitely recurring events
+  - `date` (optional): Date range object with `start` and `end` in `YYYY-MM-DD` format, both inclusive. If present, only events starting within this range are excluded by this rule. A rule always needs a title matcher, so "Any title" stores `{ type: 'regex', value: '.*', date: ... }`.
 
-This file is **not tracked in git** (it's in `.gitignore`), but **is pushed to Apps Script** (not in `.claspignore`). User secrets stay local; script logic is version-controlled.
+`appsscript.json` is tracked in git. It enables the **advanced Calendar service** (`Calendar`, v3), and lists `oauthScopes` for `calendar` and `script.scriptapp`. Its `webapp` block must stay `"executeAs": "USER_ACCESSING", "access": "ANYONE"`, so each user runs as themselves. **The project must stay shared as Anyone with the link: Viewer.** With sharing off, a user's trigger fails before any of our code runs, so nothing can be recorded.
 
-`appsscript.json` enables the **advanced Calendar service** (`Calendar`, v3). The existing `.../auth/calendar` scope already covers it; no additional scope is needed. Re-authorization is required the first time the service is used. It also holds the `webapp` block for the blocking page, which must stay `"executeAs": "USER_DEPLOYING", "access": "MYSELF"`: the page can change what gets mirrored, and reads every source calendar as the owner.
+Nothing personal may ever be pushed to the shared project, because viewers can read the code. A local `config.js` from the old single-user setup is gitignored and listed in `.claspignore`. It's needed only for the migration, using `dev/export-settings.js` and `dev/import-settings.js`.
 
 ## Debugging
 
-Apps Script's built-in logging goes to the execution transcript. Use `Logger.log()` liberally. The user can view logs in Apps Script editor > Executions tab after each manual run.
+Apps Script's built-in logging goes to the execution transcript, and **the owner can read every user's logs**. So logs and thrown errors must never contain event titles, calendar names, calendar IDs or rule text. Log counts, timings and calendar numbers only. Text meant for the user goes to the page instead, as `previewSync()` and `describeRunError()` do. Errors from the Calendar API itself may contain calendar IDs, which we can't fully control, and the user guide says so.
+
+Users never see a log or the editor. A failed run has to reach them through the `status` property.
