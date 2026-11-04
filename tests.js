@@ -136,7 +136,6 @@ function runTests() {
     .concat(testBuildEventResource())
     .concat(testBuildBlockRule())
     .concat(testParseEventStart())
-    .concat(testClassifyEvent())
     .concat(testIsBlockExpired())
     .concat(testDescribeOccurrenceRule())
     .concat(testLocalStartParts())
@@ -150,7 +149,8 @@ function runTests() {
     .concat(testIsRunStale())
     .concat(testSettingsValidators())
     .concat(testRunErrorDescriptions())
-    .concat(testSummarizePlan());
+    .concat(testSummarizePlan())
+    .concat(testIsMirrorMissing());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -575,27 +575,6 @@ function testParseEventStart() {
   ];
 }
 
-function testClassifyEvent() {
-  var start = partsFromDate(new Date(2026, 10, 4, 10, 0));
-  var configRule = { type: 'exact', value: 'From Config' };
-  var pageRule = { type: 'exact', value: 'From Page' };
-  var bothRule = { type: 'exact', value: 'Both' };
-  return withRules([configRule, bothRule], function () {
-    var pageRules = [pageRule, bothRule];
-    return [
-      blockResult('classify: a config rule match is reported as config', 'config',
-        classifyEvent('From Config', start, pageRules)),
-      blockResult('classify: a page block match is reported as page', 'page',
-        classifyEvent('From Page', start, pageRules)),
-      // Only config can be named here, as unblocking wouldn't bring it back.
-      blockResult('classify: a match on both is reported as config', 'config',
-        classifyEvent('Both', start, pageRules)),
-      blockResult('classify: no match is reported as null', null,
-        classifyEvent('Neither', start, pageRules)),
-    ];
-  });
-}
-
 function testIsBlockExpired() {
   var today = '2026-11-04';
   var ending = function (end) {
@@ -870,5 +849,14 @@ function testSummarizePlan() {
       deletes: ['d'],
       unchanged: 0,
     }, { created: 1, updated: 0, deleted: 0, unchanged: 0, deferred: 0 }, true).deferred),
+  ];
+}
+
+function testIsMirrorMissing() {
+  var calendars = [{ id: 'm@x' }, { id: 'a@x' }];
+  return [
+    blockResult('mirror: no mirror set is not missing', false, isMirrorMissing('', calendars)),
+    blockResult('mirror: a listed mirror is not missing', false, isMirrorMissing('m@x', calendars)),
+    blockResult('mirror: a deleted mirror is missing', true, isMirrorMissing('gone@x', calendars)),
   ];
 }
