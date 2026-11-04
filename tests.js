@@ -144,7 +144,13 @@ function runTests() {
     .concat(testValidateRule())
     .concat(testNormalizeAndCompileRule())
     .concat(testParseStoredRule())
-    .concat(testDescribeRule());
+    .concat(testDescribeRule())
+    .concat(testAssertSafeMirror())
+    .concat(testAssertReadyToSync())
+    .concat(testIsRunStale())
+    .concat(testSettingsValidators())
+    .concat(testRunErrorDescriptions())
+    .concat(testSummarizePlan());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -749,5 +755,120 @@ function testDescribeRule() {
     blockResult('describe: compiled regex', 'Titles matching /^Lab/i', describeRule(compileRule({ type: 'regex', value: '^Lab', flags: 'i' }))),
     blockResult('describe: limits', 'All events titled "Standup", on MO, WE, from 09:00 to 10:00', describeRule(withLimits)),
     blockResult('describe: any title with a range', 'All events, 2026-12-21 to 2027-01-01', describeRule(range)),
+  ];
+}
+
+// --- Settings and sync lifecycle ----------------------------------------------
+
+function testAssertSafeMirror() {
+  var sources = [{ id: 'a@x', name: 'A' }];
+  assertSafeMirror('mirror@x', 'me@x', sources);
+  return [
+    blockResult('mirror: a separate calendar is allowed', true, true),
+    throwsResult('mirror: the primary calendar is refused', function () { assertSafeMirror('me@x', 'me@x', sources); }),
+    throwsResult('mirror: the primary alias is refused', function () { assertSafeMirror('primary', 'me@x', sources); }),
+    throwsResult('mirror: a source calendar is refused', function () { assertSafeMirror('a@x', 'me@x', sources); }),
+  ];
+}
+
+function testAssertReadyToSync() {
+  assertReadyToSync({ mirrorCalendarId: 'm@x', sourceCalendars: [{ id: 'a@x', name: 'A' }] });
+  return [
+    blockResult('ready: a mirror and a source are enough', true, true),
+    throwsResult('ready: no mirror is refused', function () {
+      assertReadyToSync({ mirrorCalendarId: '', sourceCalendars: [{ id: 'a@x', name: 'A' }] });
+    }),
+    // An empty desired state would delete everything in the mirror.
+    throwsResult('ready: no sources is refused', function () {
+      assertReadyToSync({ mirrorCalendarId: 'm@x', sourceCalendars: [] });
+    }),
+  ];
+}
+
+function testIsRunStale() {
+  var hour = 60 * 60 * 1000;
+  var now = Date.UTC(2026, 10, 10, 12, 0, 0);
+  var ago = function (hours) { return new Date(now - hours * hour).toISOString(); };
+  var on = function (frequency) { return { enabled: true, frequency: frequency, enabledAt: ago(1000) }; };
+  return [
+    blockResult('stale: daily at 48 hours is fine', false, isRunStale(on('daily'), { lastRunAt: ago(48) }, now)),
+    blockResult('stale: daily at 50 hours is stale', true, isRunStale(on('daily'), { lastRunAt: ago(50) }, now)),
+    blockResult('stale: every 6 hours at 12.5 hours is fine', false, isRunStale(on('every6h'), { lastRunAt: ago(12.5) }, now)),
+    blockResult('stale: every 6 hours at 13.5 hours is stale', true, isRunStale(on('every6h'), { lastRunAt: ago(13.5) }, now)),
+    blockResult('stale: hourly at 2.5 hours is fine', false, isRunStale(on('hourly'), { lastRunAt: ago(2.5) }, now)),
+    blockResult('stale: hourly at 3.5 hours is stale', true, isRunStale(on('hourly'), { lastRunAt: ago(3.5) }, now)),
+    blockResult('stale: paused is never stale', false,
+      isRunStale({ enabled: false, frequency: 'hourly', enabledAt: '' }, { lastRunAt: ago(1000) }, now)),
+    // Turning sync back on after a long pause must not warn straight away.
+    blockResult('stale: a recent turn-on outweighs an old run', false,
+      isRunStale({ enabled: true, frequency: 'daily', enabledAt: ago(1) }, { lastRunAt: ago(1000) }, now)),
+    blockResult('stale: no run yet counts from turning on', false,
+      isRunStale({ enabled: true, frequency: 'daily', enabledAt: ago(1) }, null, now)),
+    blockResult('stale: no run long after turning on is stale', true,
+      isRunStale({ enabled: true, frequency: 'daily', enabledAt: ago(60) }, null, now)),
+  ];
+}
+
+function testSettingsValidators() {
+  var cleaned = validateSources([{ id: 'a@x', name: ' A ', color: 5, extra: 1 }, { id: 'b@x', name: '' }], 'm@x');
+  return [
+    blockResult('lookahead: accepts a valid number', 90, validateLookaheadDays('90')),
+    throwsResult('lookahead: refuses zero', function () { validateLookaheadDays(0); }),
+    throwsResult('lookahead: refuses a fraction', function () { validateLookaheadDays(1.5); }),
+    throwsResult('lookahead: refuses too many days', function () { validateLookaheadDays(366); }),
+    throwsResult('lookahead: refuses text', function () { validateLookaheadDays('soon'); }),
+    blockResult('sources: names are trimmed', 'A', cleaned[0].name),
+    blockResult('sources: colours are normalised', '5', cleaned[0].color),
+    blockResult('sources: unknown keys are dropped', false, 'extra' in cleaned[0]),
+    blockResult('sources: an empty name falls back to Calendar', 'Calendar', cleaned[1].name),
+    throwsResult('sources: a missing id is refused', function () { validateSources([{ name: 'A' }], 'm@x'); }),
+    throwsResult('sources: an invalid colour is refused', function () { validateSources([{ id: 'a@x', name: 'A', color: '12' }], 'm@x'); }),
+    throwsResult('sources: the mirror is refused', function () { validateSources([{ id: 'm@x', name: 'M' }], 'm@x'); }),
+  ];
+}
+
+function testRunErrorDescriptions() {
+  var tagged = tagSourceError(new Error('Not Found'), 'Work');
+  return [
+    blockResult('error: names the calendar for the page', 'Could not read "Work": Not Found', describeRunError(tagged)),
+    // This message reaches the owner's logs when rethrown.
+    blockResult('error: the rethrown message has no calendar name', 'Not Found', tagged.message),
+    blockResult('error: other errors are unchanged', 'Boom', describeRunError(new Error('Boom'))),
+  ];
+}
+
+function testSummarizePlan() {
+  var plan = {
+    creates: [{ title: 'New', startLabel: '2026-11-04 10:00', sourceName: 'A' }],
+    updates: [{ desired: { title: 'Changed', startLabel: '2026-11-05', sourceName: 'A' } }],
+    deletes: [
+      { title: 'Old', start: '2026-11-06', sourceName: 'A', syncKey: 'k' },
+      { title: 'Manual', start: '2026-11-07', sourceName: 'unknown' },
+    ],
+    unchanged: 7,
+  };
+  var excluded = [{ title: 'Skip', startLabel: '2026-11-08', sourceName: 'B', rule: { type: 'contains', value: 'skip' } }];
+  var summary = summarizePlan(plan, excluded);
+  return [
+    blockResult('summary: counts', '1,1,2,7,1', [summary.counts.creates, summary.counts.updates, summary.counts.deletes,
+      summary.counts.unchanged, summary.counts.excluded].join(',')),
+    blockResult('summary: create start', '2026-11-04 10:00', summary.creates[0].start),
+    blockResult('summary: update title', 'Changed', summary.updates[0].title),
+    blockResult('summary: delete reason for a tracked event', 'No longer in a source calendar, or now excluded by a rule', summary.deletes[0].reason),
+    blockResult('summary: delete reason for an untracked event', 'Not created by vCal', summary.deletes[1].reason),
+    blockResult('summary: exclude reason names the rule', 'Titles containing "skip"', summary.excludes[0].reason),
+    blockResult('summary: a delete shows its local start when it has one', '2026-11-06 10:00', summarizePlan({
+      creates: [],
+      updates: [],
+      deletes: [{ title: 'Old', start: '2026-11-06T15:00:00Z', startLabel: '2026-11-06 10:00', sourceName: 'A', syncKey: 'k' }],
+      unchanged: 0,
+    }, []).deletes[0].start),
+    // A run that stops during creates has also deferred every update and delete.
+    blockResult('summary: deferred counts every step the run did not reach', 3, finishRun({
+      creates: ['a', 'b'],
+      updates: ['c'],
+      deletes: ['d'],
+      unchanged: 0,
+    }, { created: 1, updated: 0, deleted: 0, unchanged: 0, deferred: 0 }, true).deferred),
   ];
 }
