@@ -45,7 +45,7 @@ Each has a test or a stated check in the owning task.
 - Produces: `var CONFIG = { mirrorCalendarId: '', sourceCalendars: [], rules: [], lookaheadDays: 180, timeZone: '' }` in `settings.js`.
 - Produces: the command `TZ=America/New_York node dev/run-tests.js`, which exits non-zero on any failure.
 
-- [ ] **Step 1: Create the branch and commit the spec and this plan**
+- [x] **Step 1: Create the branch and commit the spec and this plan**
 
 ```bash
 git switch -c shared-link
@@ -53,7 +53,7 @@ git add docs/superpowers/specs/2026-11-04-shared-link-design.md docs/superpowers
 git commit -m "add shared link design and plan"
 ```
 
-- [ ] **Step 2: Add `settings.js` with only the `CONFIG` declaration above, and add these lines to `.claspignore`**
+- [x] **Step 2: Add `settings.js` with only the `CONFIG` declaration above, and add these lines to `.claspignore`**
 
 ```
 dev/**
@@ -62,7 +62,7 @@ config.js
 
 `config.js` must never reach the shared project, and it declares a conflicting `const CONFIG`.
 
-- [ ] **Step 3: Write `dev/run-tests.js`**
+- [x] **Step 3: Write `dev/run-tests.js`**
 
 Use only `node:vm`, `node:fs`, `node:path`, `node:crypto`. Create one VM context and run every root-level `*.js` file in it, sorted by name, skipping `config.js` and `config.example.js`. Then call `runTests()`, and set a non-zero exit code if it throws. Also compile the inline `<script>` from `index.html` with `new vm.Script` and fail on a syntax error, without running it.
 
@@ -71,18 +71,18 @@ Provide only these stubs, so a test touching `PropertiesService`, `Calendar`, `S
 - `Utilities.DigestAlgorithm.MD5`, `Utilities.Charset.UTF_8`, and `Utilities.computeDigest()`, returning an array of **signed** bytes like Apps Script does.
 - `Utilities.formatDate(date, timeZone, pattern)`, supporting `yyyy-MM-dd` and `yyyy-MM-dd HH:mm` using `Intl.DateTimeFormat` with `hourCycle: 'h23'`.
 
-- [ ] **Step 4: Remove the `typeof CONFIG === 'undefined'` guard from `testMatchesRules()`**
+- [x] **Step 4: Remove the `typeof CONFIG === 'undefined'` guard from `testMatchesRules()`**
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: every existing test passes, ending in `All tests passed.`
 
-- [ ] **Step 6: Confirm the runner detects failure**
+- [x] **Step 6: Confirm the runner detects failure**
 
 Temporarily change one `expected` value in `TEST_CASES` and run again. Expected: non-zero exit with `FAIL`. Revert the change.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add dev/run-tests.js settings.js .claspignore tests.js
@@ -104,11 +104,11 @@ git commit -m "add local test runner and default CONFIG"
 - Produces, in `blocks.js`: `buildBlockRule(scope, title, parts)`.
 - `classifyEvent(title, parts, pageRules)` keeps working for now, and Task 5 removes it.
 
-- [ ] **Step 1: Add a test helper and convert the existing tests**
+- [x] **Step 1: Add a test helper and convert the existing tests**
 
 Add `partsFromDate(date)` to `tests.js`. It returns local parts using the `Date` getters, so the existing fixtures keep their `new Date(...)` values. Change the calls in `testMatchesRules`, `testMalformedDateRules`, `storedRuleMatches`, `testBuildBlockRule`, `testClassifyEvent` and `testDescribeBlock` to pass parts. In `testParseEventStart`, replace the `formatDate(allDay)` case with `blockResult('start: an all-day date stays on the same local day', 25, allDay.getDate())`.
 
-- [ ] **Step 2: Write the failing tests, and add `testLocalStartParts` and `testContainsRule` to `runTests()`**
+- [x] **Step 2: Write the failing tests, and add `testLocalStartParts` and `testContainsRule` to `runTests()`**
 
 ```javascript
 function testLocalStartParts() {
@@ -163,12 +163,12 @@ function testContainsRule() {
 }
 ```
 
-- [ ] **Step 3: Run the tests to confirm they fail**
+- [x] **Step 3: Run the tests to confirm they fail**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: failure, because `localStartParts` isn't defined.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 In `rules.js`: add `localStartParts()` and `describeStart()`. For `dateTime`, make one `Utilities.formatDate(date, timeZone, 'yyyy-MM-dd HH:mm')` call. Work out `day` from the date string with `Date.UTC` and `getUTCDay()`, so no time-zone conversion applies. Change the day, time and date matchers to read parts. Add `contains` to `ruleMatchesTitle()`, trimmed and case-insensitive. Remove `formatDate()`.
 
@@ -178,12 +178,12 @@ In `sync.js` `collectEvents()`: match on `localStartParts(item.start, CONFIG.tim
 
 In `webapp.js`: `toPageEvent()` and `blockEvent()` use `localStartParts()`, with `startMs` from `parseEventStart()`.
 
-- [ ] **Step 5: Run the tests in two time zones**
+- [x] **Step 5: Run the tests in two time zones**
 
 Run: `TZ=America/New_York node dev/run-tests.js && TZ=Asia/Tokyo node dev/run-tests.js`
 Expected: both end in `All tests passed.`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add rules.js blocks.js sync.js webapp.js tests.js
@@ -211,7 +211,7 @@ git commit -m "match rules on local time parts and add contains"
 
 All store functions use `getUserProperties()`.
 
-- [ ] **Step 1: Write the failing tests, and add them to `runTests()`**
+- [x] **Step 1: Write the failing tests, and add them to `runTests()`**
 
 ```javascript
 function testValidateRule() {
@@ -296,27 +296,27 @@ function testDescribeRule() {
 
 Rename `testDescribeBlock` to `testDescribeOccurrenceRule` and point it at `describeRule()`. Its three existing expected strings stay the same. An occurrence is a rule whose date start equals its end and whose time window is one minute.
 
-- [ ] **Step 2: Run the tests to confirm they fail**
+- [x] **Step 2: Run the tests to confirm they fail**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: failure, because `validateRule` isn't defined.
 
-- [ ] **Step 3: Implement the pure functions in `rules.js` and `blocks.js`**
+- [x] **Step 3: Implement the pure functions in `rules.js` and `blocks.js`**
 
 `validateRule()` throws short fixed messages such as `'Enter a title.'` and `'The end date must not be before the start date.'`. It applies the blank-title rule to `exact` only when no `date` is set. Valid `flags` are `''` or `'i'`, and valid times are `00:00` to `24:00`. It detects a real date by round-tripping through `Date.UTC`. "Any title" means regex `.*` with no flags.
 
 Delete `describeRule()` from `sync.js`. `logDryRun()` still calls it until Task 4 removes that, which no test exercises.
 
-- [ ] **Step 4: Implement the store in `blocks.js`**
+- [x] **Step 4: Implement the store in `blocks.js`**
 
 The key is `RULE_KEY_PREFIX + md5Hex(JSON.stringify(normalizeRule(rule)))`. `addRule()` validates and normalizes first. `replaceRule()` adds the new rule, then removes the old. `removeRule()` keeps its prefix check. `loadStoredRules()` deletes only `rule:` keys where `parseStoredRule()` returns `null`, and logs just the number deleted, never the content. Delete `BLOCK_KEY_PREFIX`, `loadBlocks`, `loadBlockRules`, `addBlock`, `removeBlock` and `pruneExpiredBlocks`, and update their callers in `sync.js` and `webapp.js`.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: `All tests passed.`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add rules.js blocks.js sync.js webapp.js tests.js
@@ -345,7 +345,7 @@ git commit -m "add rule validation and per-user rule store"
   - Pure: `summarizePlan(plan, excluded)`, `describeRunError(e)`, `tagSourceError(e, sourceName)`.
 - Status shape: `{ lastRunAt: ISO string, created, updated, deleted, unchanged, deferred, error: '' }`, or with `error` set and zero counts.
 
-- [ ] **Step 1: Write the failing tests, and add them to `runTests()`**
+- [x] **Step 1: Write the failing tests, and add them to `runTests()`**
 
 ```javascript
 function testAssertSafeMirror() {
@@ -449,16 +449,16 @@ function testSummarizePlan() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to confirm they fail**
+- [x] **Step 2: Run the tests to confirm they fail**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: failure, because `assertSafeMirror` isn't defined.
 
-- [ ] **Step 3: Implement `settings.js`**
+- [x] **Step 3: Implement `settings.js`**
 
 `isRunStale()` compares against the later of `status.lastRunAt` and `settings.enabledAt`, and is stale past `(2 * FREQUENCY_HOURS[frequency] + 1)` hours. `assertSafeMirror()` also refuses `'primary'`. Settings are one `settings` User Property and status is one `status` User Property, both JSON.
 
-- [ ] **Step 4: Rework `sync.js`**
+- [x] **Step 4: Rework `sync.js`**
 
 - Delete `DRY_RUN`, `logDryRun()`, `describeColor()` and the `CONFIG` undefined check. Keep `EVENT_COLOR_NAMES`.
 - `desired[syncKey]` carries `startLabel`.
@@ -468,19 +468,19 @@ Expected: failure, because `assertSafeMirror` isn't defined.
 - `mirrorCalendarSync()` calls `loadStoredSettings()`, returns immediately if `enabled` is false, and otherwise calls `runSync()`.
 - `applyPlan()` and `finishRun()` return the counts.
 
-- [ ] **Step 5: Remove calendar content from logs**
+- [x] **Step 5: Remove calendar content from logs**
 
 Remove the title, source and calendar-name text from every log line in `sync.js`, including the colour warning and the `logTiming` labels. Use a calendar number where a label is needed. Delete the per-event `CREATE`, `UPDATE` and `DELETE` log lines.
 
 Run: `grep -nE "Logger\.log|console\.log|logTiming\(" *.js | grep -E "title|\.name|sourceName|summary|mirrorCalendarId|\.id\b|rule"`
 Expected: no output.
 
-- [ ] **Step 6: Delete `config.example.js`, then run the tests**
+- [x] **Step 6: Delete `config.example.js`, then run the tests**
 
 Run: `git rm config.example.js && TZ=America/New_York node dev/run-tests.js`
 Expected: `All tests passed.`
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add settings.js sync.js tests.js
@@ -512,7 +512,7 @@ git commit -m "load per-user settings, record run status and remove calendar tex
   - `syncNow()` returns `{ status }`, catching failures because `runSync()` has already recorded them.
 - Produces, pure: `isMirrorMissing(mirrorCalendarId, calendars)`, where `calendars` is the unfiltered list.
 
-- [ ] **Step 1: Write the failing test, and add it to `runTests()`**
+- [x] **Step 1: Write the failing test, and add it to `runTests()`**
 
 ```javascript
 function testIsMirrorMissing() {
@@ -525,12 +525,12 @@ function testIsMirrorMissing() {
 }
 ```
 
-- [ ] **Step 2: Run the test to confirm it fails**
+- [x] **Step 2: Run the test to confirm it fails**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: failure, because `isMirrorMissing` isn't defined.
 
-- [ ] **Step 3: Implement `webapp.js`**
+- [x] **Step 3: Implement `webapp.js`**
 
 - `listUserCalendars()` pages through `Calendar.CalendarList.list`, and maps to `{ id, name: summaryOverride || summary }`.
 - `getPageData()` calls `pruneExpiredRules()` with today in the user's time zone. It leaves the mirror out of `calendars`. It only reads events once a mirror and at least one source are set. Unreadable calendars still become `warnings`, which go only to the page. `events[].blocked` is `matchesRules(title, parts)`. `colors` comes from `EVENT_COLOR_NAMES`.
@@ -542,7 +542,7 @@ Expected: failure, because `isMirrorMissing` isn't defined.
 - `pauseSync()` removes those triggers and clears `enabled`.
 - Update the header comment. The page now runs as each user.
 
-- [ ] **Step 4: Track the manifest**
+- [x] **Step 4: Track the manifest**
 
 Remove `appsscript.json` from `.gitignore`, and set its contents to:
 
@@ -567,12 +567,12 @@ Remove `appsscript.json` from `.gitignore`, and set its contents to:
 }
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: `All tests passed.`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add webapp.js tests.js appsscript.json .gitignore
@@ -591,7 +591,7 @@ git commit -m "add page actions for setup and sync, and track the manifest"
 
 No automated tests cover the DOM. The runner checks the script compiles, and Task 8 covers behaviour.
 
-- [ ] **Step 1: Rewrite the page body and script**
+- [x] **Step 1: Rewrite the page body and script**
 
 Keep the existing CSS tokens, `el()`, `button()`, `clear()`, `callServer()`, `act()` and the reload-after-action pattern. Set the heading to `vCal`.
 
@@ -622,17 +622,17 @@ Keep the existing CSS tokens, `el()`, `button()`, `clear()`, `callServer()`, `ac
 
 All calendar and rule text uses `textContent`.
 
-- [ ] **Step 2: Run the runner's syntax check and the tests**
+- [x] **Step 2: Run the runner's syntax check and the tests**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: `All tests passed.`
 
-- [ ] **Step 3: Check that no HTML injection was introduced**
+- [x] **Step 3: Check that no HTML injection was introduced**
 
 Run: `grep -n "innerHTML\|insertAdjacentHTML\|document.write" index.html`
 Expected: no output.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add index.html
@@ -647,14 +647,14 @@ git commit -m "rebuild the page around setup, rules and sync status"
 - Create: `dev/export-settings.js`, `dev/import-settings.js`
 - Modify: `README.md`, `CLAUDE.md`, top comment of `sync.js`, top comment of `tests.js`, top comment of `blocks.js`
 
-- [ ] **Step 1: Write the migration snippets**
+- [x] **Step 1: Write the migration snippets**
 
 Neither file holds personal data, and Marcus pastes them into the editor in Task 8.
 
 - `dev/export-settings.js`: `exportSettings()` for the **old** project. Logs one JSON string of `{ settings: { mirrorCalendarId, sourceCalendars, lookaheadDays }, rules: [...] }`, combining `CONFIG.rules` and every `block:` Script Property. Regex values become their `.source` and `.flags` text, with `g` and `y` removed.
 - `dev/import-settings.js`: `importSettings(data)` for the **new** project, taking the exported JSON pasted in as an object. Saves the settings with `previewed` and `enabled` false, and adds each rule with `addRule()`, so an invalid rule stops the import with an error.
 
-- [ ] **Step 2: Rewrite `README.md`**
+- [x] **Step 2: Rewrite `README.md`**
 
 **User guide**, first and short: open the link, get past the unverified-app warning, follow the setup, preview, turn on. Include the rule types, the mirror being owned by vCal (anything added by hand gets deleted), the disclosure text from Task 6, the multiple-account limitation, and how to stop: **Pause**, then remove access at Google account connections.
 
@@ -667,7 +667,7 @@ Neither file holds personal data, and Marcus pastes them into the editor in Task
 
 Add `TZ=America/New_York node dev/run-tests.js` as the local test command.
 
-- [ ] **Step 3: Update `CLAUDE.md`**
+- [x] **Step 3: Update `CLAUDE.md`**
 
 - **Runtime:** the local runner is allowed under `dev/`, and is never pushed.
 - **Filter Logic:** the new `matchesRules(title, parts)` signature, and `contains`.
@@ -680,17 +680,17 @@ Add `TZ=America/New_York node dev/run-tests.js` as the local test command.
 - **Configuration:** replace with per-user settings. The manifest must stay `USER_ACCESSING` and `ANYONE`, and the project must stay link-viewable.
 - **Debugging:** logs must never contain event titles, calendar names, calendar IDs or rule text, because the owner can read every user's logs. Replace "Use `Logger.log()` liberally" with this.
 
-- [ ] **Step 4: Update the stale comments in `sync.js`, `tests.js` and `blocks.js`**
+- [x] **Step 4: Update the stale comments in `sync.js`, `tests.js` and `blocks.js`**
 
 Run: `grep -nE "DRY_RUN|config\.js|config\.example|do not add the trigger|Script Properties|CalendarApp" *.js index.html CLAUDE.md README.md`
 Expected: only intended mentions, such as `config.js` in the migration notes and "Don't read source events through `CalendarApp`".
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `TZ=America/New_York node dev/run-tests.js`
 Expected: `All tests passed.`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add dev/export-settings.js dev/import-settings.js README.md CLAUDE.md sync.js tests.js blocks.js
@@ -703,21 +703,21 @@ git commit -m "document the shared link and add migration snippets"
 
 An agent must not do this task. Hand it to Marcus with the results of Tasks 1 to 7.
 
-- [ ] **Step 1: Export from the old project.** Paste `dev/export-settings.js` into the old project's editor, run `exportSettings`, and copy the JSON. Remove the snippet afterwards.
-- [ ] **Step 2: Create the new project with link sharing off.** Move the current `.clasp.json` aside, run `clasp create --type standalone --title vCal`, run `git checkout appsscript.json`, confirm `clasp status` does **not** list `config.js`, then run `clasp push --force`.
-- [ ] **Step 3: Run the tests in the editor.** Run `runTests`, and accept the permission prompts. Expected: `All tests passed.`
-- [ ] **Step 4: Import.** In the editor, paste `dev/import-settings.js` and a temporary function, `function runImport() { importSettings(PASTE_THE_JSON_HERE); }`, with the JSON pasted in directly and **no quotes around it**. Run `runImport`. Delete both from the editor and save. **Do this before the first deployment.** Confirm no personal data remains in the project's code.
-- [ ] **Step 5: Deploy and preview.** Run `clasp deploy`, open the link and click **Preview**. Expected: close to zero creates, updates and deletes, with your existing exclusions listed.
-- [ ] **Step 6: Switch over.** Delete the old project's trigger, then click **Turn on sync** on the page. Confirm a scheduled run records a status.
-- [ ] **Step 7: Turn on link sharing** as **Anyone with the link: Viewer**.
-- [ ] **Step 8: Test as the second account, ideally with a calendar in another time zone.**
+- [x] **Step 1: Export from the old project.** Paste `dev/export-settings.js` into the old project's editor, run `exportSettings`, and copy the JSON. Remove the snippet afterwards.
+- [x] **Step 2: Create the new project with link sharing off.** Move the current `.clasp.json` aside, run `clasp create --type standalone --title vCal`, run `git checkout appsscript.json`, confirm `clasp status` does **not** list `config.js`, then run `clasp push --force`.
+- [x] **Step 3: Run the tests in the editor.** Run `runTests`, and accept the permission prompts. Expected: `All tests passed.`
+- [x] **Step 4: Import.** In the editor, paste `dev/import-settings.js` and a temporary function, `function runImport() { importSettings(PASTE_THE_JSON_HERE); }`, with the JSON pasted in directly and **no quotes around it**. Run `runImport`. Delete both from the editor and save. **Do this before the first deployment.** Confirm no personal data remains in the project's code.
+- [x] **Step 5: Deploy and preview.** Run `clasp deploy`, open the link and click **Preview**. Expected: close to zero creates, updates and deletes, with your existing exclusions listed.
+- [x] **Step 6: Switch over.** Delete the old project's trigger, then click **Turn on sync** on the page. Confirm a scheduled run records a status.
+- [x] **Step 7: Turn on link sharing** as **Anyone with the link: Viewer**.
+- [x] **Step 8: Test as the second account, ideally with a calendar in another time zone.**
   1. Complete setup from the link, and confirm **Preview** writes nothing.
   2. **Turn on sync**, and confirm events appear and the trigger fires.
   3. Add a rule of each type, and confirm its events leave the mirror at the next sync.
   4. Confirm a rule with a time limit matches in that account's time zone.
   5. **Pause**, and confirm no further runs.
   6. Confirm neither account sees the other's rules or settings.
-  7. **All-day events across time zones (review finding 4).** Use a source calendar and a mirror in different time zones, say Los Angeles and New York. Add an all-day event for today to the source, and run **Sync now** every few minutes during the hours when it's today in one zone but not the other, near midnight. Expected: **Preview** shows nothing to add once it's copied, and the mirror keeps one copy. If copies keep appearing, stop and report it: the sync removes extra copies only when it can see them, so this needs a code fix.
+  7. **Skipped, not yet verified.** **All-day events across time zones (review finding 4).** Use a source calendar and a mirror in different time zones, say Los Angeles and New York. Add an all-day event for today to the source, and run **Sync now** every few minutes during the hours when it's today in one zone but not the other, near midnight. Expected: **Preview** shows nothing to add once it's copied, and the mirror keeps one copy. If copies keep appearing, stop and report it: the sync removes extra copies only when it can see them, so this needs a code fix.
   8. **Mass delete stop.** With at least 10 mirrored events, add a regex rule `.+`. Expected: the next scheduled run deletes nothing and the page explains why. **Preview** then **Sync now** carries it out. Delete the rule afterwards.
-- [ ] **Step 9: Check privacy.** As the owner, open the second account's runs, and confirm the logs contain no event titles, calendar names or IDs. As the second account, confirm the project's Executions page doesn't show other users' runs.
-- [ ] **Step 10: Decide on the old project.** Keep it private until you're happy, then delete it.
+- [x] **Step 9: Check privacy.** As the owner, open the second account's runs, and confirm the logs contain no event titles, calendar names or IDs. As the second account, confirm the project's Executions page doesn't show other users' runs.
+- [x] **Step 10: Decide on the old project.** Keep it private until you're happy, then delete it.
