@@ -1,87 +1,261 @@
-// Server side of the blocking page (index.html). Deployed as a web app that
-// runs as the owner and is restricted to the owner; see the README.
+// Server side of the page (index.html). Deployed as a web app that runs as each
+// user, so every call here reads that user's calendars and User Properties. See
+// the README.
+//
+// Everything sent to the page is plain JSON: a Date or RegExp doesn't survive
+// google.script.run. Every function except doGet() starts with loadSettings().
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('index')
-    .setTitle('vCal blocks')
+    .setTitle('vCal')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-// Everything the page shows. Dates are sent as strings, and times are formatted
-// here rather than in the browser, so they use the script time zone that rules
-// are evaluated in.
+// Everything the page shows. Times are formatted here rather than in the browser,
+// so they use the time zone that rules are evaluated in.
 function getPageData() {
-  pruneExpiredBlocks();
-  var blocks = loadBlocks();
-  var pageRules = blocks.map(function (block) {
-    return block.rule;
-  });
+  var settings = loadSettings();
+  pruneExpiredRules(Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'));
 
-  var windowStart = new Date();
-  var windowEnd = new Date(windowStart.getTime() + CONFIG.lookaheadDays * 24 * 60 * 60 * 1000);
-
-  var events = [];
+  var allCalendars = listUserCalendars();
   var warnings = [];
-  CONFIG.sourceCalendars.forEach(function (source) {
-    try {
-      listSourceEvents(source.id, windowStart, windowEnd).forEach(function (item) {
-        events.push(toPageEvent(item, source.name, pageRules));
-      });
-    } catch (e) {
-      // Matches how the sync skips a missing calendar: the rest still load.
-      warnings.push('Could not read source calendar "' + source.name + '": ' + e.message);
-    }
-  });
-  events.sort(function (a, b) {
-    return a.startMs - b.startMs;
-  });
+  var status = loadStatus();
+  var removedRules = loadRemovedRuleCount();
 
   return {
-    blocks: blocks
-      .map(function (block) {
-        return { key: block.key, description: describeBlock(block.rule) };
-      })
-      .sort(function (a, b) {
-        return a.description < b.description ? -1 : 1;
-      }),
-    events: events,
+    timeZone: CONFIG.timeZone,
+    settings: {
+      mirrorCalendarId: settings.mirrorCalendarId,
+      mirrorMissing: isMirrorMissing(settings.mirrorCalendarId, allCalendars),
+      sourceCalendars: settings.sourceCalendars,
+      lookaheadDays: settings.lookaheadDays,
+      previewed: settings.previewed,
+      enabled: settings.enabled,
+      frequency: settings.frequency,
+    },
+    status: status,
+    stale: isRunStale(settings, status, Date.now()),
+    calendars: allCalendars.filter(function (calendar) {
+      return calendar.id !== settings.mirrorCalendarId;
+    }),
+    rules: listPageRules(),
+    events: readPageEvents(settings, warnings),
+    colors: VALID_EVENT_COLOR_IDS.map(function (id) {
+      return { id: id, name: EVENT_COLOR_NAMES[id] };
+    }),
     warnings: warnings,
+    removedRulesNotice: removedRules > 0 ? describeRemovedRules(removedRules) : '',
   };
 }
 
-function toPageEvent(item, sourceName, pageRules) {
+// Includes hidden calendars, because a mirror someone hid from their list still
+// exists and mustn't be treated as deleted.
+function listUserCalendars() {
+  var calendars = [];
+  var pageToken = null;
+  do {
+    var response = Calendar.CalendarList.list({ maxResults: 250, showHidden: true, pageToken: pageToken });
+    (response.items || []).forEach(function (item) {
+      calendars.push({ id: item.id, name: item.summaryOverride || item.summary });
+    });
+    pageToken = response.nextPageToken;
+  } while (pageToken);
+  return calendars;
+}
+
+// `calendars` is the unfiltered list. Pure.
+function isMirrorMissing(mirrorCalendarId, calendars) {
+  return Boolean(mirrorCalendarId) && !calendars.some(function (calendar) {
+    return calendar.id === mirrorCalendarId;
+  });
+}
+
+function listPageRules() {
+  return loadStoredRules()
+    .map(function (entry) {
+      return { key: entry.key, rule: entry.rule, description: describeRule(entry.rule) };
+    })
+    .sort(function (a, b) {
+      return a.description < b.description ? -1 : 1;
+    });
+}
+
+// Unlike the sync, this catches a failed calendar and warns, because a page load
+// can't delete anything. Warnings go only to the page, never to a log.
+function readPageEvents(settings, warnings) {
+  if (!settings.mirrorCalendarId || settings.sourceCalendars.length === 0) {
+    return [];
+  }
+  var windowStart = new Date();
+  var windowEnd = new Date(windowStart.getTime() + CONFIG.lookaheadDays * 24 * 60 * 60 * 1000);
+  var events = [];
+  settings.sourceCalendars.forEach(function (source) {
+    try {
+      listSourceEvents(source.id, windowStart, windowEnd).forEach(function (item) {
+        events.push(toPageEvent(item, source.name));
+      });
+    } catch (e) {
+      warnings.push(describeRunError(tagSourceError(e, source.name)));
+    }
+  });
+  return events.sort(comparePageEvents);
+}
+
+// By the day and time the page shows, with all-day events (no time) first. An
+// all-day event's instant follows the script's time zone, so sorting by instant
+// would split a day's events under two headings for users elsewhere. Pure.
+function comparePageEvents(a, b) {
+  if (a.day !== b.day) {
+    return a.day < b.day ? -1 : 1;
+  }
+  if (a.time !== b.time) {
+    return a.time < b.time ? -1 : 1;
+  }
+  return 0;
+}
+
+function toPageEvent(item, sourceName) {
   var title = item.summary || '';
-  var startTime = parseEventStart(item.start);
-  var allDay = Boolean(item.start.date);
+  var parts = localStartParts(item.start, CONFIG.timeZone);
   return {
     title: title,
     start: item.start.date || item.start.dateTime,
-    startMs: startTime.getTime(),
-    allDay: allDay,
-    day: formatDate(startTime),
-    time: allDay ? '' : formatMinutes(startTime.getHours() * 60 + startTime.getMinutes()),
+    allDay: parts.allDay,
+    day: parts.date,
+    time: parts.allDay ? '' : formatMinutes(parts.minutes),
     sourceName: sourceName,
-    blockedBy: classifyEvent(title, startTime, pageRules),
+    blocked: matchesRules(title, parts),
   };
 }
 
-// Returns 'config', 'page' or null. Config wins when both match, because the
-// page's undo couldn't bring back an event that config.js also excludes.
-function classifyEvent(title, startTime, pageRules) {
-  if (findMatchingRule(title, startTime)) {
-    return 'config';
+// --- Calendars ----------------------------------------------------------------
+
+// The only way to set a mirror, because the sync deletes everything in the mirror
+// that it didn't create. Refusing while the mirror still exists means a double
+// click can't replace it.
+function createMirrorCalendar() {
+  var settings = loadSettings();
+  if (settings.mirrorCalendarId && !isMirrorMissing(settings.mirrorCalendarId, listUserCalendars())) {
+    throw new Error('You already have a mirror calendar.');
   }
-  var blocked = pageRules.some(function (rule) {
-    return ruleMatches(rule, title, startTime);
-  });
-  return blocked ? 'page' : null;
+  var calendar = Calendar.Calendars.insert({ summary: 'vCal mirror', timeZone: CONFIG.timeZone });
+  settings.mirrorCalendarId = calendar.id;
+  saveStoredSettings(settings);
+}
+
+function saveSources(sources) {
+  var settings = loadSettings();
+  settings.sourceCalendars = validateSources(sources, settings.mirrorCalendarId);
+  saveStoredSettings(settings);
+}
+
+function saveLookaheadDays(days) {
+  var settings = loadSettings();
+  settings.lookaheadDays = validateLookaheadDays(days);
+  saveStoredSettings(settings);
+}
+
+// --- Rules --------------------------------------------------------------------
+
+// `oldKey` is null when adding.
+function saveRule(rule, oldKey) {
+  loadSettings();
+  if (oldKey) {
+    replaceRule(oldKey, rule);
+  } else {
+    addRule(rule);
+  }
+}
+
+function deleteRule(key) {
+  loadSettings();
+  removeRule(key);
 }
 
 function blockEvent(scope, title, start, allDay) {
-  var startTime = parseEventStart(allDay ? { date: start } : { dateTime: start });
-  addBlock(buildBlockRule(scope, title, startTime));
+  loadSettings();
+  var parts = localStartParts(allDay ? { date: start } : { dateTime: start }, CONFIG.timeZone);
+  addRule(buildBlockRule(scope, title, parts));
 }
 
-function unblock(key) {
-  removeBlock(key);
+function dismissRemovedRules() {
+  loadSettings();
+  clearRemovedRuleCount();
+}
+
+// --- Sync lifecycle -----------------------------------------------------------
+
+// Makes no writes to any calendar. Returns its failure instead of throwing,
+// because the error can name a calendar and a thrown one reaches the owner's logs.
+function previewSync() {
+  try {
+    var settings = loadSettings();
+    assertReadyToSync(settings);
+    var built = buildSyncPlan(Date.now());
+    // Read again, because a preview can take minutes.
+    var latest = loadStoredSettings();
+    latest.previewed = true;
+    // Sync now may carry out as many deletes as this preview just showed.
+    latest.approvedDeletes = built.plan.deletes.length;
+    saveStoredSettings(latest);
+    return { preview: summarizePlan(built.plan, built.excluded) };
+  } catch (e) {
+    return { error: describeRunError(e) };
+  }
+}
+
+function syncNow() {
+  var settings = loadSettings();
+  assertReadyToSync(settings);
+  assertPreviewed(settings);
+  try {
+    var status = runSync(settings.approvedDeletes);
+    return status ? { status: status } : { status: loadStatus(), busy: true };
+  } catch (e) {
+    // runSync() has already recorded it, and the page shows the status.
+    return { status: loadStatus() };
+  }
+}
+
+// Replaces any existing trigger, so this also changes the frequency.
+function turnOnSync(frequency) {
+  var settings = loadSettings();
+  assertPreviewed(settings);
+  if (!Object.prototype.hasOwnProperty.call(FREQUENCY_HOURS, frequency)) {
+    throw new Error('Choose how often to sync.');
+  }
+  removeSyncTriggers();
+  var builder = ScriptApp.newTrigger('mirrorCalendarSync').timeBased();
+  if (frequency === 'daily') {
+    builder.everyDays(1);
+  } else {
+    builder.everyHours(FREQUENCY_HOURS[frequency]);
+  }
+  builder.create();
+  settings.enabled = true;
+  settings.enabledAt = new Date().toISOString();
+  settings.frequency = frequency;
+  saveStoredSettings(settings);
+}
+
+function pauseSync() {
+  var settings = loadSettings();
+  removeSyncTriggers();
+  settings.enabled = false;
+  saveStoredSettings(settings);
+}
+
+function assertPreviewed(settings) {
+  if (!settings.previewed) {
+    throw new Error('Run a preview first.');
+  }
+}
+
+// getProjectTriggers() returns only the current user's triggers.
+function removeSyncTriggers() {
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === 'mirrorCalendarSync') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 }

@@ -1,15 +1,11 @@
-// Test harness for matchesRules(). Runs without touching CalendarApp, so
-// it's safe and fast to run from the Apps Script editor before enabling
-// the schedule trigger.
+// runTests() covers the pure functions. It touches no Calendar API or stored
+// properties, so it's safe and fast to run, either in the Apps Script editor or
+// with: TZ=America/New_York node dev/run-tests.js
 //
 // Rules are a BLACKLIST: matchesRules() returning true means the title/time
 // matched an exclusion rule and should be filtered OUT of the mirror.
 // `expected: true` below means "this event is excluded"; `expected: false`
 // means "this event is mirrored" (the default for anything not matched).
-//
-// PLACEHOLDER FIXTURES: TEST_RULES and TEST_CASES below use made-up titles
-// and times. Replace them with real titles (and real recurrence times)
-// from your source calendars before trusting these results.
 
 var TEST_RULES = [
   { type: 'exact', value: 'All-Hands Meeting' },
@@ -136,9 +132,27 @@ function runTests() {
     .concat(testBuildEventResource())
     .concat(testBuildBlockRule())
     .concat(testParseEventStart())
-    .concat(testClassifyEvent())
     .concat(testIsBlockExpired())
-    .concat(testDescribeBlock());
+    .concat(testDescribeOccurrenceRule())
+    .concat(testLocalStartParts())
+    .concat(testContainsRule())
+    .concat(testValidateRule())
+    .concat(testNormalizeAndCompileRule())
+    .concat(testParseStoredRule())
+    .concat(testDescribeRule())
+    .concat(testAssertSafeMirror())
+    .concat(testAssertReadyToSync())
+    .concat(testIsRunStale())
+    .concat(testSettingsValidators())
+    .concat(testRunErrorDescriptions())
+    .concat(testSummarizePlan())
+    .concat(testIsMirrorMissing())
+    .concat(testIdentityIsPinned())
+    .concat(testMirrorDuplicates())
+    .concat(testMassDeleteGuard())
+    .concat(testStoredRuleFixtures())
+    .concat(testDescribeRemovedRules())
+    .concat(testComparePageEvents());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -157,10 +171,6 @@ function runTests() {
 }
 
 function testMatchesRules() {
-  if (typeof CONFIG === 'undefined') {
-    throw new Error('CONFIG is not defined. Copy config.example.js to config.js before running tests.');
-  }
-
   // Swap in fixture rules for the duration of the test run, then restore
   // whatever the user's real config had — this keeps matchesRules()'s
   // two-argument signature while testing against known fixtures rather
@@ -170,7 +180,7 @@ function testMatchesRules() {
   try {
     CONFIG.rules = TEST_RULES;
     TEST_CASES.forEach(function (testCase) {
-      var actual = matchesRules(testCase.title, testCase.startTime);
+      var actual = matchesRules(testCase.title, partsFromDate(testCase.startTime));
       results.push({
         description: testCase.description,
         expected: testCase.expected,
@@ -199,7 +209,7 @@ function testMalformedDateRules() {
       CONFIG.rules = [{ type: 'exact', value: 'Holiday Party', date: testCase.date }];
       var threw = false;
       try {
-        matchesRules('Holiday Party', new Date(2026, 11, 25, 12, 0));
+        matchesRules('Holiday Party', partsFromDate(new Date(2026, 11, 25, 12, 0)));
       } catch (e) {
         threw = true;
       }
@@ -455,9 +465,9 @@ function testBuildEventResource() {
 
 // --- Page-made blocks --------------------------------------------------------
 //
-// These cover only the pure half of blocks.js and webapp.js. The Script
-// Properties store is deliberately not touched here, so running the tests can
-// never alter real blocks.
+// These cover only the pure half of blocks.js and webapp.js. The User Properties
+// store is deliberately not touched here, so running the tests can never alter
+// real rules.
 
 function blockResult(description, expected, actual) {
   return { description: description, expected: expected, actual: actual, passed: actual === expected };
@@ -473,6 +483,20 @@ function throwsResult(description, fn) {
   return blockResult(description, 'throws', threw ? 'throws' : 'no error');
 }
 
+// Local start parts from a Date's getters, so fixtures can stay plain Dates.
+// Real events go through localStartParts(), which is tested separately.
+function partsFromDate(date) {
+  var pad = function (value) {
+    return (value < 10 ? '0' : '') + value;
+  };
+  return {
+    date: date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()),
+    day: DAY_CODES[date.getDay()],
+    minutes: date.getHours() * 60 + date.getMinutes(),
+    allDay: false,
+  };
+}
+
 function withRules(rules, fn) {
   var originalRules = CONFIG.rules;
   try {
@@ -485,21 +509,21 @@ function withRules(rules, fn) {
 
 // Round-trips the rule through JSON first, because that is what the store does
 // to it. A rule that only matched before serialising would pass otherwise.
-function storedRuleMatches(rule, title, startTime) {
+function storedRuleMatches(rule, title, parts) {
   return withRules([JSON.parse(JSON.stringify(rule))], function () {
-    return matchesRules(title, startTime);
+    return matchesRules(title, parts);
   });
 }
 
 function testBuildBlockRule() {
-  var lecture = new Date(2026, 10, 4, 10, 0); // Wed Nov 4 2026, 10:00am
-  var nextWeek = new Date(2026, 10, 11, 10, 0);
-  var sameDayLater = new Date(2026, 10, 4, 14, 0);
-  var oneMinuteLater = new Date(2026, 10, 4, 10, 1);
+  var lecture = partsFromDate(new Date(2026, 10, 4, 10, 0)); // Wed Nov 4 2026, 10:00am
+  var nextWeek = partsFromDate(new Date(2026, 10, 11, 10, 0));
+  var sameDayLater = partsFromDate(new Date(2026, 10, 4, 14, 0));
+  var oneMinuteLater = partsFromDate(new Date(2026, 10, 4, 10, 1));
   var occurrence = buildBlockRule('occurrence', 'Lecture', lecture);
   var wholeTitle = buildBlockRule('title', 'Lecture', lecture);
-  var lateNight = new Date(2026, 10, 4, 23, 59);
-  var allDay = parseEventStart({ date: '2026-12-25' });
+  var lateNight = partsFromDate(new Date(2026, 10, 4, 23, 59));
+  var allDay = partsFromDate(parseEventStart({ date: '2026-12-25' }));
 
   return [
     blockResult('block: occurrence rule matches that occurrence', true,
@@ -521,7 +545,7 @@ function testBuildBlockRule() {
     blockResult('block: all-day occurrence is matched', true,
       storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', allDay)),
     blockResult('block: all-day occurrence does not match the next day', false,
-      storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', new Date(2026, 11, 26))),
+      storedRuleMatches(buildBlockRule('occurrence', 'Holiday', allDay), 'Holiday', partsFromDate(new Date(2026, 11, 26)))),
     blockResult('block: untitled occurrence is allowed and matched', true,
       storedRuleMatches(buildBlockRule('occurrence', '', lecture), '', lecture)),
     throwsResult('block: title rule refuses an empty title', function () {
@@ -541,7 +565,7 @@ function testParseEventStart() {
   var timed = parseEventStart({ dateTime: '2026-09-01T14:00:00.000Z' });
   return [
     // new Date('2026-12-25') would be UTC midnight, i.e. Dec 24 in New York.
-    blockResult('start: an all-day date stays on the same local day', '2026-12-25', formatDate(allDay)),
+    blockResult('start: an all-day date stays on the same local day', 25, allDay.getDate()),
     blockResult('start: an all-day date is local midnight', 0, allDay.getHours()),
     blockResult('start: a timed start keeps its instant', Date.UTC(2026, 8, 1, 14, 0, 0), timed.getTime()),
     throwsResult('start: a malformed all-day date is refused', function () {
@@ -553,34 +577,19 @@ function testParseEventStart() {
   ];
 }
 
-function testClassifyEvent() {
-  var start = new Date(2026, 10, 4, 10, 0);
-  var configRule = { type: 'exact', value: 'From Config' };
-  var pageRule = { type: 'exact', value: 'From Page' };
-  var bothRule = { type: 'exact', value: 'Both' };
-  return withRules([configRule, bothRule], function () {
-    var pageRules = [pageRule, bothRule];
-    return [
-      blockResult('classify: a config rule match is reported as config', 'config',
-        classifyEvent('From Config', start, pageRules)),
-      blockResult('classify: a page block match is reported as page', 'page',
-        classifyEvent('From Page', start, pageRules)),
-      // Only config can be named here, as unblocking wouldn't bring it back.
-      blockResult('classify: a match on both is reported as config', 'config',
-        classifyEvent('Both', start, pageRules)),
-      blockResult('classify: no match is reported as null', null,
-        classifyEvent('Neither', start, pageRules)),
-    ];
-  });
-}
-
 function testIsBlockExpired() {
   var today = '2026-11-04';
   var ending = function (end) {
     return { type: 'exact', value: 'Lecture', date: { start: end, end: end } };
   };
   return [
-    blockResult('expiry: a block ending yesterday has expired', true, isBlockExpired(ending('2026-11-03'), today)),
+    // A multi-day event excluded by a rule dated on its first day is still running
+    // after that date, and removing the rule would bring it back to the mirror.
+    blockResult('expiry: a block ending yesterday is kept', false, isBlockExpired(ending('2026-11-03'), today)),
+    blockResult('expiry: a block ending 30 days ago is kept', false, isBlockExpired(ending('2026-10-05'), today)),
+    blockResult('expiry: a block ending 31 days ago has expired', true, isBlockExpired(ending('2026-10-04'), today)),
+    blockResult('expiry: the 30 days can cross a year boundary', true,
+      isBlockExpired(ending('2026-12-01'), '2027-01-01')),
     blockResult('expiry: a block ending today has not', false, isBlockExpired(ending('2026-11-04'), today)),
     blockResult('expiry: a block ending later has not', false, isBlockExpired(ending('2026-11-05'), today)),
     blockResult('expiry: a title block never expires', false,
@@ -588,14 +597,412 @@ function testIsBlockExpired() {
   ];
 }
 
-function testDescribeBlock() {
-  var start = new Date(2026, 10, 4, 10, 0);
+function testDescribeOccurrenceRule() {
+  var start = partsFromDate(new Date(2026, 10, 4, 10, 0));
   return [
     blockResult('describe: title block', 'All events titled "Lecture"',
-      describeBlock(buildBlockRule('title', 'Lecture', start))),
+      describeRule(buildBlockRule('title', 'Lecture', start))),
     blockResult('describe: occurrence block', '"Lecture" on 2026-11-04 at 10:00',
-      describeBlock(buildBlockRule('occurrence', 'Lecture', start))),
+      describeRule(buildBlockRule('occurrence', 'Lecture', start))),
     blockResult('describe: untitled occurrence block', '(untitled) on 2026-11-04 at 10:00',
-      describeBlock(buildBlockRule('occurrence', '', start))),
+      describeRule(buildBlockRule('occurrence', '', start))),
+  ];
+}
+
+// --- Local start parts -------------------------------------------------------
+
+function testLocalStartParts() {
+  var utc = { dateTime: '2026-11-04T15:30:00Z' };
+  var ny = localStartParts(utc, 'America/New_York');
+  var tokyo = localStartParts(utc, 'Asia/Tokyo');
+  var dst = localStartParts({ dateTime: '2026-03-08T07:30:00Z' }, 'America/New_York');
+  var offset = localStartParts({ dateTime: '2026-11-04T10:30:00-05:00' }, 'America/New_York');
+  var allDayTokyo = localStartParts({ date: '2026-12-25' }, 'Asia/Tokyo');
+  var allDayLa = localStartParts({ date: '2026-12-25' }, 'America/Los_Angeles');
+  var nearMidnight = localStartParts({ dateTime: '2026-11-04T15:05:00Z' }, 'Asia/Tokyo');
+  var block = buildBlockRule('occurrence', 'Late Call', nearMidnight);
+  var run = function (startIso) {
+    return withRules([block], function () {
+      return matchesRules('Late Call', localStartParts({ dateTime: startIso }, 'Asia/Tokyo'));
+    });
+  };
+  return [
+    blockResult('parts: New York date', '2026-11-04', ny.date),
+    blockResult('parts: New York minutes', 630, ny.minutes),
+    blockResult('parts: New York day', 'WE', ny.day),
+    blockResult('parts: Tokyo crosses to the next date', '2026-11-05', tokyo.date),
+    blockResult('parts: Tokyo minutes', 30, tokyo.minutes),
+    blockResult('parts: Tokyo day follows its date', 'TH', tokyo.day),
+    blockResult('parts: daylight saving start', 210, dst.minutes),
+    blockResult('parts: an offset timestamp is the same instant', 630, offset.minutes),
+    blockResult('parts: a timed event is not all-day', false, ny.allDay),
+    blockResult('parts: all-day keeps its date in Tokyo', '2026-12-25', allDayTokyo.date),
+    blockResult('parts: all-day keeps its date in Los Angeles', '2026-12-25', allDayLa.date),
+    blockResult('parts: all-day day code', 'FR', allDayLa.day),
+    blockResult('parts: all-day minutes', 0, allDayLa.minutes),
+    blockResult('parts: all-day flag', true, allDayLa.allDay),
+    blockResult('parts: describes a timed start', '2026-11-04 10:30', describeStart(ny)),
+    blockResult('parts: describes an all-day start', '2026-12-25', describeStart(allDayLa)),
+    blockResult('parts: a block near midnight matches its own event', true, run('2026-11-04T15:05:00Z')),
+    blockResult('parts: and not one a minute later', false, run('2026-11-04T15:06:00Z')),
+    blockResult('parts: and not the same time a day earlier', false, run('2026-11-03T15:05:00Z')),
+    throwsResult('parts: a malformed date is refused', function () { localStartParts({ date: '12/25/2026' }, 'Asia/Tokyo'); }),
+    throwsResult('parts: a malformed dateTime is refused', function () { localStartParts({ dateTime: 'nope' }, 'Asia/Tokyo'); }),
+  ];
+}
+
+function testContainsRule() {
+  var parts = partsFromDate(new Date(2026, 10, 4, 10, 0));
+  var rule = { type: 'contains', value: ' Exam ' };
+  return [
+    blockResult('contains: matches regardless of case', true, ruleMatches(rule, 'Final EXAM review', parts)),
+    blockResult('contains: does not match other text', false, ruleMatches(rule, 'Lecture', parts)),
+    blockResult('contains: respects its limits', false,
+      ruleMatches({ type: 'contains', value: 'exam', days: ['TU'] }, 'Exam', parts)),
+  ];
+}
+
+// --- Rule validation and storage ---------------------------------------------
+
+function testValidateRule() {
+  var bad = [
+    ['an unknown type', { type: 'fuzzy', value: 'a' }],
+    ['an empty contains', { type: 'contains', value: '  ' }],
+    ['an empty regex', { type: 'regex', value: '' }],
+    ['an invalid regex', { type: 'regex', value: '(' }],
+    ['the g flag', { type: 'regex', value: 'a', flags: 'g' }],
+    ['the y flag', { type: 'regex', value: 'a', flags: 'y' }],
+    ['a blank exact title with no date', { type: 'exact', value: ' ' }],
+    ['any title with no limits', { type: 'regex', value: '.*' }],
+    // Ticking "case-insensitive" must not get around the refusal above.
+    ['any title with no limits and the i flag', { type: 'regex', value: '.*', flags: 'i' }],
+    ['an unknown day', { type: 'exact', value: 'a', days: ['XX'] }],
+    ['empty days', { type: 'exact', value: 'a', days: [] }],
+    ['a malformed time', { type: 'exact', value: 'a', time: { start: '9am', end: '10:00' } }],
+    ['an impossible time', { type: 'exact', value: 'a', time: { start: '25:00', end: '26:00' } }],
+    ['a time with start after end', { type: 'exact', value: 'a', time: { start: '10:00', end: '09:00' } }],
+    ['a time with start equal to end', { type: 'exact', value: 'a', time: { start: '09:00', end: '09:00' } }],
+    ['a malformed date', { type: 'exact', value: 'a', date: { start: '12/25/2026', end: '12/25/2026' } }],
+    ['an impossible date', { type: 'exact', value: 'a', date: { start: '2026-02-31', end: '2026-02-31' } }],
+    ['a date with start after end', { type: 'exact', value: 'a', date: { start: '2026-12-26', end: '2026-12-25' } }],
+  ];
+  var good = [
+    ['exact', { type: 'exact', value: 'Lecture' }],
+    ['contains', { type: 'contains', value: 'exam' }],
+    ['case-insensitive regex', { type: 'regex', value: '^Lab', flags: 'i' }],
+    ['any title with a date', { type: 'regex', value: '.*', date: { start: '2026-12-25', end: '2026-12-25' } }],
+    ['any title with days', { type: 'regex', value: '.*', days: ['SA', 'SU'] }],
+    ['an untitled occurrence', { type: 'exact', value: '', date: { start: '2026-11-04', end: '2026-11-04' }, time: { start: '10:00', end: '10:01' } }],
+    ['a window ending at 24:00', { type: 'exact', value: 'a', time: { start: '23:59', end: '24:00' } }],
+  ];
+  var leaked = 'no error';
+  try {
+    validateRule({ type: 'exact', value: 'PRIVATE-TITLE', date: { start: 'PRIVATE-DATE', end: 'PRIVATE-DATE' } });
+  } catch (e) {
+    leaked = e.message.indexOf('PRIVATE') === -1 ? 'clean' : 'leaked';
+  }
+  return bad.map(function (c) {
+    return throwsResult('validate: refuses ' + c[0], function () { validateRule(c[1]); });
+  }).concat(good.map(function (c) {
+    validateRule(c[1]);
+    return blockResult('validate: accepts ' + c[0], true, true);
+  })).concat([blockResult('validate: errors do not repeat the rule', 'clean', leaked)]);
+}
+
+function testNormalizeAndCompileRule() {
+  var a = normalizeRule({ days: ['MO', 'SU'], value: 'a', extra: 1, flags: '', type: 'contains' });
+  var b = normalizeRule({ type: 'contains', value: 'a', days: ['SU', 'MO'] });
+  var parts = partsFromDate(new Date(2026, 10, 4, 10, 0));
+  var compiled = compileRule(JSON.parse(JSON.stringify({ type: 'regex', value: '^lab', flags: 'i' })));
+  return [
+    blockResult('normalize: equal rules give the same JSON', JSON.stringify(b), JSON.stringify(a)),
+    blockResult('normalize: days follow DAY_CODES order', 'SU,MO', a.days.join(',')),
+    blockResult('normalize: unknown keys are dropped', false, 'extra' in a),
+    blockResult('compile: a stored regex matches', true, ruleMatches(compiled, 'LAB 3', parts)),
+    blockResult('compile: repeat matches stay true', true, ruleMatches(compiled, 'LAB 3', parts)),
+    blockResult('compile: an exact rule is unchanged', 'x', compileRule({ type: 'exact', value: 'x' }).value),
+  ];
+}
+
+function testParseStoredRule() {
+  return [
+    blockResult('stored: reads a valid rule', 'a', parseStoredRule('{"type":"exact","value":"a"}').value),
+    blockResult('stored: corrupt JSON is unreadable', null, parseStoredRule('{ not json')),
+    blockResult('stored: a rule that fails validation is unreadable', null, parseStoredRule('{"type":"regex","value":"("}')),
+  ];
+}
+
+function testDescribeRule() {
+  var limits = { days: ['MO', 'WE'], time: { start: '09:00', end: '10:00' } };
+  var withLimits = { type: 'exact', value: 'Standup', days: limits.days, time: limits.time };
+  var range = { type: 'regex', value: '.*', date: { start: '2026-12-21', end: '2027-01-01' } };
+  return [
+    blockResult('describe: contains', 'Titles containing "exam"', describeRule({ type: 'contains', value: 'exam' })),
+    blockResult('describe: stored regex', 'Titles matching /^Lab/i', describeRule({ type: 'regex', value: '^Lab', flags: 'i' })),
+    blockResult('describe: compiled regex', 'Titles matching /^Lab/i', describeRule(compileRule({ type: 'regex', value: '^Lab', flags: 'i' }))),
+    blockResult('describe: limits', 'All events titled "Standup", on MO, WE, from 09:00 to 10:00', describeRule(withLimits)),
+    blockResult('describe: any title with a range', 'All events, 2026-12-21 to 2027-01-01', describeRule(range)),
+  ];
+}
+
+// --- Settings and sync lifecycle ----------------------------------------------
+
+function testAssertSafeMirror() {
+  var sources = [{ id: 'a@x', name: 'A' }];
+  assertSafeMirror('mirror@x', 'me@x', sources);
+  return [
+    blockResult('mirror: a separate calendar is allowed', true, true),
+    throwsResult('mirror: the primary calendar is refused', function () { assertSafeMirror('me@x', 'me@x', sources); }),
+    throwsResult('mirror: the primary alias is refused', function () { assertSafeMirror('primary', 'me@x', sources); }),
+    throwsResult('mirror: a source calendar is refused', function () { assertSafeMirror('a@x', 'me@x', sources); }),
+  ];
+}
+
+function testAssertReadyToSync() {
+  assertReadyToSync({ mirrorCalendarId: 'm@x', sourceCalendars: [{ id: 'a@x', name: 'A' }] });
+  return [
+    blockResult('ready: a mirror and a source are enough', true, true),
+    throwsResult('ready: no mirror is refused', function () {
+      assertReadyToSync({ mirrorCalendarId: '', sourceCalendars: [{ id: 'a@x', name: 'A' }] });
+    }),
+    // An empty desired state would delete everything in the mirror.
+    throwsResult('ready: no sources is refused', function () {
+      assertReadyToSync({ mirrorCalendarId: 'm@x', sourceCalendars: [] });
+    }),
+  ];
+}
+
+function testIsRunStale() {
+  var hour = 60 * 60 * 1000;
+  var now = Date.UTC(2026, 10, 10, 12, 0, 0);
+  var ago = function (hours) { return new Date(now - hours * hour).toISOString(); };
+  var on = function (frequency) { return { enabled: true, frequency: frequency, enabledAt: ago(1000) }; };
+  return [
+    blockResult('stale: daily at 48 hours is fine', false, isRunStale(on('daily'), { lastRunAt: ago(48) }, now)),
+    blockResult('stale: daily at 50 hours is stale', true, isRunStale(on('daily'), { lastRunAt: ago(50) }, now)),
+    blockResult('stale: every 6 hours at 12.5 hours is fine', false, isRunStale(on('every6h'), { lastRunAt: ago(12.5) }, now)),
+    blockResult('stale: every 6 hours at 13.5 hours is stale', true, isRunStale(on('every6h'), { lastRunAt: ago(13.5) }, now)),
+    blockResult('stale: hourly at 2.5 hours is fine', false, isRunStale(on('hourly'), { lastRunAt: ago(2.5) }, now)),
+    blockResult('stale: hourly at 3.5 hours is stale', true, isRunStale(on('hourly'), { lastRunAt: ago(3.5) }, now)),
+    blockResult('stale: paused is never stale', false,
+      isRunStale({ enabled: false, frequency: 'hourly', enabledAt: '' }, { lastRunAt: ago(1000) }, now)),
+    // Turning sync back on after a long pause must not warn straight away.
+    blockResult('stale: a recent turn-on outweighs an old run', false,
+      isRunStale({ enabled: true, frequency: 'daily', enabledAt: ago(1) }, { lastRunAt: ago(1000) }, now)),
+    blockResult('stale: no run yet counts from turning on', false,
+      isRunStale({ enabled: true, frequency: 'daily', enabledAt: ago(1) }, null, now)),
+    blockResult('stale: no run long after turning on is stale', true,
+      isRunStale({ enabled: true, frequency: 'daily', enabledAt: ago(60) }, null, now)),
+  ];
+}
+
+function testSettingsValidators() {
+  var cleaned = validateSources([{ id: 'a@x', name: ' A ', color: 5, extra: 1 }, { id: 'b@x', name: '' }], 'm@x');
+  return [
+    blockResult('lookahead: accepts a valid number', 90, validateLookaheadDays('90')),
+    throwsResult('lookahead: refuses zero', function () { validateLookaheadDays(0); }),
+    throwsResult('lookahead: refuses a fraction', function () { validateLookaheadDays(1.5); }),
+    throwsResult('lookahead: refuses too many days', function () { validateLookaheadDays(366); }),
+    throwsResult('lookahead: refuses text', function () { validateLookaheadDays('soon'); }),
+    blockResult('sources: names are trimmed', 'A', cleaned[0].name),
+    blockResult('sources: colours are normalised', '5', cleaned[0].color),
+    blockResult('sources: unknown keys are dropped', false, 'extra' in cleaned[0]),
+    blockResult('sources: an empty name falls back to Calendar', 'Calendar', cleaned[1].name),
+    throwsResult('sources: a missing id is refused', function () { validateSources([{ name: 'A' }], 'm@x'); }),
+    throwsResult('sources: an invalid colour is refused', function () { validateSources([{ id: 'a@x', name: 'A', color: '12' }], 'm@x'); }),
+    throwsResult('sources: the mirror is refused', function () { validateSources([{ id: 'm@x', name: 'M' }], 'm@x'); }),
+  ];
+}
+
+function testRunErrorDescriptions() {
+  var tagged = tagSourceError(new Error('Not Found'), 'Work');
+  return [
+    blockResult('error: names the calendar for the page', 'Could not read "Work": Not Found', describeRunError(tagged)),
+    // This message reaches the owner's logs when rethrown.
+    blockResult('error: the rethrown message has no calendar name', 'Not Found', tagged.message),
+    blockResult('error: other errors are unchanged', 'Boom', describeRunError(new Error('Boom'))),
+  ];
+}
+
+function testSummarizePlan() {
+  var plan = {
+    creates: [{ title: 'New', startLabel: '2026-11-04 10:00', sourceName: 'A' }],
+    updates: [{ desired: { title: 'Changed', startLabel: '2026-11-05', sourceName: 'A' } }],
+    deletes: [
+      { title: 'Old', start: '2026-11-06', sourceName: 'A', syncKey: 'k' },
+      { title: 'Manual', start: '2026-11-07', sourceName: 'unknown' },
+    ],
+    unchanged: 7,
+  };
+  var excluded = [{ title: 'Skip', startLabel: '2026-11-08', sourceName: 'B', rule: { type: 'contains', value: 'skip' } }];
+  var summary = summarizePlan(plan, excluded);
+  return [
+    blockResult('summary: counts', '1,1,2,7,1', [summary.counts.creates, summary.counts.updates, summary.counts.deletes,
+      summary.counts.unchanged, summary.counts.excluded].join(',')),
+    blockResult('summary: create start', '2026-11-04 10:00', summary.creates[0].start),
+    blockResult('summary: update title', 'Changed', summary.updates[0].title),
+    blockResult('summary: delete reason for a tracked event', 'No longer in a source calendar, or now excluded by a rule', summary.deletes[0].reason),
+    blockResult('summary: delete reason for an untracked event', 'Not created by vCal', summary.deletes[1].reason),
+    blockResult('summary: exclude reason names the rule', 'Titles containing "skip"', summary.excludes[0].reason),
+    blockResult('summary: a delete shows its local start when it has one', '2026-11-06 10:00', summarizePlan({
+      creates: [],
+      updates: [],
+      deletes: [{ title: 'Old', start: '2026-11-06T15:00:00Z', startLabel: '2026-11-06 10:00', sourceName: 'A', syncKey: 'k' }],
+      unchanged: 0,
+    }, []).deletes[0].start),
+    // A run that stops during creates has also deferred every update and delete.
+    blockResult('summary: deferred counts every step the run did not reach', 3, finishRun({
+      creates: ['a', 'b'],
+      updates: ['c'],
+      deletes: ['d'],
+      unchanged: 0,
+    }, { created: 1, updated: 0, deleted: 0, unchanged: 0, deferred: 0 }, true).deferred),
+  ];
+}
+
+function testIsMirrorMissing() {
+  var calendars = [{ id: 'm@x' }, { id: 'a@x' }];
+  return [
+    blockResult('mirror: no mirror set is not missing', false, isMirrorMissing('', calendars)),
+    blockResult('mirror: a listed mirror is not missing', false, isMirrorMissing('m@x', calendars)),
+    blockResult('mirror: a deleted mirror is missing', true, isMirrorMissing('gone@x', calendars)),
+  ];
+}
+
+// --- Safeguards ---------------------------------------------------------------
+
+// These values came from the code that built the existing mirrors. If one changes,
+// every mirrored event gets deleted and recreated, or rewritten, at the next sync.
+function testIdentityIsPinned() {
+  var results = [
+    blockResult('pinned: a timed sync key', 'a578e362020ab2a407d490c5799c2705',
+      computeSyncKey(SAMPLE_CALENDAR_ID, SAMPLE_ICAL_UID, new Date(Date.UTC(2026, 8, 1, 14, 0, 0)))),
+    blockResult('pinned: a signature', '5edc93f0e15a375cea97da7c3a1cfac9',
+      computeSignature(cloneResource(), SAMPLE_LAST_UPDATED)),
+  ];
+  // An all-day key depends on the script's time zone, New York in appsscript.json.
+  // The local runner can use another zone, where this value wouldn't apply.
+  if (new Date(2026, 11, 25).getTimezoneOffset() === 300) {
+    results.push(blockResult('pinned: an all-day sync key', '7da188f90ac6f0ded0a9df0b21be79fe',
+      computeSyncKey(SAMPLE_CALENDAR_ID, SAMPLE_ICAL_UID, parseEventStart({ date: '2026-12-25' }))));
+  }
+  return results;
+}
+
+function testMirrorDuplicates() {
+  var item = function (id, syncKey) {
+    var privateProps = {};
+    privateProps[SYNC_KEY] = syncKey;
+    privateProps[SIGNATURE_KEY] = 'same';
+    return {
+      id: id,
+      summary: 'Holiday',
+      start: { date: '2026-12-25' },
+      extendedProperties: { private: privateProps },
+    };
+  };
+  var index = emptyMirrorIndex();
+  addMirrorItem(index, item('first', 'k1'));
+  addMirrorItem(index, item('second', 'k1'));
+  addMirrorItem(index, item('other', 'k2'));
+  addMirrorItem(index, { id: 'manual', summary: 'By hand', start: { date: '2026-12-26' } });
+  var desired = {
+    k1: { syncKey: 'k1', signature: 'same' },
+    k2: { syncKey: 'k2', signature: 'same' },
+  };
+  var plan = buildPlan(desired, index);
+  var deletedIds = plan.deletes.map(function (entry) { return entry.id; }).sort().join(',');
+  return [
+    blockResult('duplicates: the first copy is kept', 'first', index.tracked.k1.id),
+    blockResult('duplicates: only the extra copy and the untracked event are deleted', 'manual,second', deletedIds),
+    blockResult('duplicates: the kept copies count as unchanged', 2, plan.unchanged),
+    blockResult('duplicates: nothing is recreated', 0, plan.creates.length),
+    blockResult('duplicates: the page explains why', 'A duplicate copy of another event in the mirror',
+      summarizePlan(plan, []).deletes.filter(function (row) { return row.reason.indexOf('duplicate') !== -1; })[0].reason),
+  ];
+}
+
+function testMassDeleteGuard() {
+  var plan = function (deletes, keptInMirror) {
+    var list = [];
+    for (var i = 0; i < deletes; i++) {
+      list.push({ title: 'PRIVATE-TITLE', start: '2026-11-04', sourceName: 'PRIVATE-CALENDAR', syncKey: 'k' + i });
+    }
+    return { creates: [], updates: [], deletes: list, unchanged: keptInMirror };
+  };
+  return [
+    blockResult('mass delete: an empty mirror is not', false, isMassDelete(plan(0, 0))),
+    blockResult('mass delete: 9 of 9 is below the minimum', false, isMassDelete(plan(9, 0))),
+    blockResult('mass delete: exactly half is not', false, isMassDelete(plan(10, 10))),
+    blockResult('mass delete: just over half is', true, isMassDelete(plan(10, 9))),
+    blockResult('mass delete: all of a large mirror is', true, isMassDelete(plan(20, 0))),
+    blockResult('mass delete: events still to be created do not count as being in the mirror', true, isMassDelete({
+      creates: plan(50, 0).deletes, updates: [], deletes: plan(10, 0).deletes, unchanged: 0,
+    })),
+    blockResult('mass delete: events to update count as being in the mirror', false, isMassDelete({
+      creates: [], updates: plan(10, 0).deletes, deletes: plan(10, 0).deletes, unchanged: 0,
+    })),
+    blockResult('mass delete: a scheduled run stops', true, shouldStopForDeletes(plan(20, 0), 0)),
+    blockResult('mass delete: an approved preview allows it', false, shouldStopForDeletes(plan(20, 0), 20)),
+    // Something changed after the preview, so its approval doesn't cover this.
+    blockResult('mass delete: a larger delete than was previewed stops', true, shouldStopForDeletes(plan(21, 0), 20)),
+    blockResult('mass delete: an ordinary delete never stops', false, shouldStopForDeletes(plan(5, 100), 0)),
+    blockResult('mass delete: the preview flags it', true, summarizePlan(plan(20, 0), []).massDelete),
+    blockResult('mass delete: the preview does not flag an ordinary delete', false, summarizePlan(plan(5, 100), []).massDelete),
+    // This message reaches the owner's logs when rethrown.
+    blockResult('mass delete: the message gives counts only',
+      'vCal stopped before deleting 20 of the 25 events in your mirror. Click Preview to check the list, then Sync now to go ahead.',
+      describeMassDelete(plan(20, 5))),
+  ];
+}
+
+// Rules already saved by real users. A rule that stops validating is deleted the
+// next time it loads, so tightening validateRule() can wipe rules for every user at
+// once. Only ever add to this list. If one of these fails, loosen the change.
+var STORED_RULE_FIXTURES = [
+  '{"type":"exact","value":"Lecture"}',
+  '{"type":"exact","value":"  Spaces kept  "}',
+  '{"type":"contains","value":"exam"}',
+  '{"type":"regex","value":"^Lab\\\\b"}',
+  '{"type":"regex","value":"^lab","flags":"i"}',
+  '{"type":"regex","value":".*","date":{"start":"2026-12-25","end":"2026-12-25"}}',
+  '{"type":"regex","value":".*","days":["SA","SU"]}',
+  '{"type":"exact","value":"Standup","days":["MO","WE"],"time":{"start":"09:00","end":"10:00"}}',
+  '{"type":"exact","value":"Break","date":{"start":"2026-12-20","end":"2027-01-05"}}',
+  '{"type":"exact","value":"Late","date":{"start":"2026-11-04","end":"2026-11-04"},"time":{"start":"23:59","end":"24:00"}}',
+  '{"type":"exact","value":"","date":{"start":"2026-11-04","end":"2026-11-04"},"time":{"start":"10:00","end":"10:01"}}',
+];
+
+function testStoredRuleFixtures() {
+  return STORED_RULE_FIXTURES.map(function (json) {
+    return blockResult('stored fixture stays readable: ' + json, true, parseStoredRule(json) !== null);
+  });
+}
+
+function testDescribeRemovedRules() {
+  return [
+    blockResult('removed rules: one',
+      '1 saved rule could not be read and was removed, so events it excluded may return to your mirror.',
+      describeRemovedRules(1)),
+    blockResult('removed rules: several',
+      '3 saved rules could not be read and were removed, so events they excluded may return to your mirror.',
+      describeRemovedRules(3)),
+  ];
+}
+
+// Sorts by what the page shows, because an all-day event's instant follows the
+// script's time zone and a heading is printed each time the day changes.
+function testComparePageEvents() {
+  var events = [
+    { title: 'evening', day: '2026-11-06', time: '18:00' },
+    { title: 'next day all-day', day: '2026-11-07', time: '' },
+    { title: 'all-day', day: '2026-11-06', time: '' },
+    { title: 'late the day before', day: '2026-11-05', time: '23:00' },
+    { title: 'morning', day: '2026-11-06', time: '09:00' },
+  ];
+  var sorted = events.slice().sort(comparePageEvents).map(function (event) { return event.title; }).join(', ');
+  return [
+    blockResult('page events: by day, then all-day first, then time',
+      'late the day before, all-day, morning, evening, next day all-day', sorted),
   ];
 }

@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "test": "TZ=America/New_York node dev/run-tests.js && TZ=Asia/Tokyo node dev/run-tests.js",
+    "push:testing": "npm test && clasp -P \"$PWD/.clasp-testing.json\" push --force",
+    "push:prod": "npm test && clasp push --force"
+  },
   "dependencies": {
     "glob": "^13.0.6"
   }

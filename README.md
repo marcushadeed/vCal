@@ -1,124 +1,160 @@
-# Purpose
+# vCal
 
-This project serves multiple purposes:
+vCal gathers your calendars into one mirror calendar, and leaves out the events you don't want. Every event is copied unless a rule excludes it, and the mirror stays in sync with its sources.
 
-1. Gather multiple shared calendars into one single, editable calendar.
-2. Automatically filter events copied into that mirror calendar to reduce clutter.
-3. Support filter-and-re-run functionality to keep the mirror in sync with source calendars.
+- [User guide](#user-guide): if someone gave you a link.
+- [Deployer guide](#deployer-guide): if you run your own copy.
 
-# Setup and Usage
+# User guide
 
-## 1. Set Up Locally
+## Get started
 
-1. Clone this repo. It needs to be local so you can edit the config before pushing it to Apps Script.
-  ```
-   git clone https://github.com/marcushadeed/vCal.git
-  ```
-2. Install packages from `package-lock.json`:
-  ```
-   npm install
-  ```
-   If you don't have npm, follow the [install instructions](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm) and try again.
-3. Install CLASP, the command-line tool used to push the code to Apps Script:
-  ```
-   npm install -g @google/clasp
-  ```
+1. Open the link you were given, and sign in with your Google account.
+2. Google warns that the app isn't verified. Choose **Advanced**, then **Go to vCal**, and allow access. vCal needs to read your calendars, write to its mirror calendar, and schedule its own syncs.
+3. Follow the steps on the page:
+   1. **Create mirror calendar.**
+   2. Tick your source calendars, choose names and colours if you like, and click **Save calendars**.
+   3. Add rules for anything you want left out. This is optional, and you can add more later.
+   4. Click **Preview** to see what a sync would do. A preview changes nothing.
+   5. Choose how often to sync, and click **Turn on sync**.
 
-## 2. Create the Config
+A large first sync can take several runs to finish. **Sync now** runs one straight away.
 
-Before pushing the code to Apps Script, configure your calendar sources and filters.
+## Rules
 
-1. Copy `config.example.js` and rename the copy to `config.js`. You may remove the comments in `config.js` to improve readability.
-2. [Create a new Google Calendar](https://calendar.google.com/calendar/u/0/r/settings/createcalendar). This will be your mirror calendar.
-3. Get the mirror calendar's ID: open the hamburger menu (three lines, top left) in Google Calendar → find the mirror calendar under **My calendars** → hover over it and click the three dots → **Settings and sharing** → copy the **Calendar ID** under **Integrate calendar**. It will look like `abc123@group.calendar.google.com`.
-4. Paste that ID as the value of `mirrorCalendarId` in `config.js`.
-5. Add your source calendars under `sourceCalendars`, one JSON object per calendar. Set `id` to the calendar's ID and `name` to a label of your choosing. Optionally set `color` to an event-colour id (`'1'`–`'11'`, listed in the `config.example.js` comments) to give every event from that calendar the same colour in the mirror, so you can still tell sources apart at a glance.
-6. Add your filters under `rules`, following the instructions in the `config.example.js` comments.
+A rule describes events to **leave out**. An event that matches no rule is copied.
 
-## 3. Push to Apps Script via CLASP
+| Match | Excludes events whose title |
+|---|---|
+| Exact title | is exactly this, ignoring spaces at either end |
+| Title contains | contains this, ignoring upper and lower case |
+| Regex (advanced) | matches this regular expression |
+| Any title | is anything. Needs a day, time or date limit, because it would otherwise empty your mirror |
 
-1. Enable the Apps Script API for your account: go to [script.google.com/home/usersettings](https://script.google.com/home/usersettings) and turn on **Google Apps Script API**. Without this, CLASP fails on `create`/`push` with a "User has not enabled the Apps Script API" error.
-2. Log in to CLASP with the Google account that should own the mirror calendar:
-  ```
+Any rule can also be limited to certain days, a time window or a date range. These use your calendar's time zone.
+
+Under **Upcoming**, each event also offers **Block this** for that one occurrence, and **Block all titled this**. Both add to your list of rules.
+
+Rules match on title and start time, so:
+
+- A rule applies across all your source calendars.
+- Renaming an event, or moving a blocked occurrence, breaks its block, and the event returns to the mirror.
+- Changing your calendar's time zone breaks **Block this** rules, because they store a local date and time.
+
+Changes apply at the next sync. A rule with a date range is removed 30 days after the range ends.
+
+## The mirror belongs to vCal
+
+**Anything you add to the mirror calendar by hand gets deleted at the next sync.** Keep your own events somewhere else.
+
+If you delete the mirror calendar, the page says so and offers **Create mirror calendar** again.
+
+## If vCal stops before deleting events
+
+If a sync would delete more than half of your mirror, and at least 10 events, vCal stops and tells you on the page. This protects you from a rule that matches more than you meant. Click **Preview** to check the list. If it's what you want, click **Sync now**. Otherwise, fix the rule, and the next sync carries on as normal.
+
+## What the owner can do
+
+vCal runs on its owner's Apps Script project. The owner can see when your syncs ran, and controls the code that can read and change your calendars. Google's error messages, which the owner can see, may include calendar IDs.
+
+## If the page won't load
+
+Google web apps often fail when you're signed in to more than one Google account. Try an incognito window, or sign out of the others.
+
+## How to stop
+
+1. Click **Pause**. This stops future syncs.
+2. Remove vCal's access at [Google account connections](https://myaccount.google.com/connections).
+
+The mirror calendar stays until you delete it.
+
+# Deployer guide
+
+## Before you start
+
+Read these first. They all follow from how shared Apps Script web apps work.
+
+- **Use a new Apps Script project.** Don't share a project that has ever held personal calendar data, because it may remain in saved versions.
+- **The project must stay shared as Anyone with the link: Viewer.** A user's trigger fails without it, before any of vCal's code runs. So turning sharing off breaks every user's sync, with no recorded error. The page can only warn them that a sync is overdue.
+- **Never push anything personal.** Viewers can read the code. `config.js` is in `.claspignore`, so check that `clasp status` doesn't list it.
+- **A deployment reaches every user's next scheduled run**, with no action from them. Run the tests and try the change in a separate testing project first (see [Testing project](#testing-project)). Don't use a test deployment of the real project: it shares settings, rules and the mirror with the real one for whichever account opens it, so **Sync now** there runs untested code against that account's real mirror.
+- **You can read every user's logs.** So logs must never contain event titles, calendar names, calendar IDs or rule text.
+- **Unverified apps are limited to 100 users, for the lifetime of the project.** Users also see the unverified-app warning.
+
+## Set up locally
+
+```
+git clone https://github.com/marcushadeed/vCal.git
+cd vCal
+npm install
+npm install -g @google/clasp
+```
+
+If you don't have npm, follow the [install instructions](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm).
+
+Turn on **Google Apps Script API** at [script.google.com/home/usersettings](https://script.google.com/home/usersettings). Without it, clasp fails with a "User has not enabled the Apps Script API" error.
+
+## Run the tests
+
+```
+npm test
+```
+
+This runs `dev/run-tests.js` in two time zones. It needs only Node, and touches no calendar or Apps Script project. It also checks that the page's script compiles. `runTests` can be run in the Apps Script editor too.
+
+## Create and deploy
+
+1. Log in, and create the project:
+   ```
    clasp login
-  ```
-3. Create a new Apps Script project (name it `vCal`, or whatever you prefer):
-  ```
-   clasp create --title vCal
-  ```
-4. Enable the advanced Calendar service. `clasp create` generates a fresh `appsscript.json`, and that file is gitignored, so this is not carried over by cloning — without it the sync fails with `Calendar is not defined`. Open `appsscript.json` and set `dependencies` to:
-  ```json
-  "dependencies": {
-    "enabledAdvancedServices": [
-      { "userSymbol": "Calendar", "serviceId": "calendar", "version": "v3" }
-    ]
-  },
-  ```
-   The existing `https://www.googleapis.com/auth/calendar` scope already covers it; no extra scope is needed.
-5. Check your CLASP setup:
-  ```
-   clasp status
-  ```
-   You should see the following files tracked:
-  ```
-  Tracked files:
-  └─ appsscript.json
-  └─ blocks.js
-  └─ config.js
-  └─ index.html
-  └─ rules.js
-  └─ sync.js
-  └─ tests.js
-  └─ webapp.js
-  ```
-6. Push to Apps Script:
-  ```
+   clasp create --type standalone --title vCal
+   ```
+2. `clasp create` overwrites `appsscript.json`, so restore it:
+   ```
+   git checkout appsscript.json
+   ```
+3. Run `clasp status`, and confirm `config.js` isn't listed.
+4. Push:
+   ```
    clasp push --force
-  ```
-   `--force` is required. A plain `clasp push` uploads the `.js` files but will not overwrite the remote `appsscript.json`, so the advanced Calendar service you enabled in step 4 never reaches the project. The push reports success either way — the only symptom is `ReferenceError: Calendar is not defined` later, at the first `Calendar.Events` call.
-7. Confirm the manifest actually landed:
-  ```
-   clasp pull
-  ```
-   Re-open `appsscript.json` and check that `dependencies` still contains the `Calendar` entry from step 4. If it came back empty, the manifest did not push.
+   ```
+   `--force` is required. Without it the manifest isn't updated, and the push still reports success. The first symptom is `Calendar is not defined`.
+5. Deploy:
+   ```
+   clasp deploy
+   ```
+6. In the Apps Script editor, click **Share**, and set the project to **Anyone with the link: Viewer**.
+7. In the editor, click **Deploy**, then **Manage deployments**, and copy the **Web app** URL. That's the link to share.
 
-## 4. Test in Apps Script
+## Testing project
 
-1. Open your project in the [Apps Script editor](https://script.google.com/home).
-2. Open `Tests.gs`, select the `runTests` function, run it, accept the permission prompts, and confirm all tests pass.
-3. Open `Sync.gs`, confirm `DRY_RUN` is set to `true`, select `mirrorCalendarSync` as the function to run, and run it. Confirm the output matches what you expect.
-4. To view the logged output of any run, open the **Executions** tab (clock-with-arrow icon in the left sidebar) and select the most recent execution, or use **View > Logs** (Ctrl+Enter) from the editor immediately after a run.
+A second Apps Script project, **vCal-testing**, for trying changes against live Google services. Its `.clasp-testing.json` is gitignored.
 
-## 5. Run for Real
+Pushing to the real project doesn't reach users, since they run the deployed version. The testing project is still worth it, because:
 
-1. Set `DRY_RUN` to `false` in `Sync.gs`, then run `mirrorCalendarSync` again. The script writes through the advanced Calendar service, so the first run prompts for authorization again — accept it.
-2. Check the mirror calendar itself to confirm the created events match what the dry run predicted.
-3. Add a time-driven trigger so the sync runs automatically: in the Apps Script editor, open the **Triggers** tab (clock icon in the left sidebar) → **+ Add Trigger** → set "Choose which function to run" to `mirrorCalendarSync`, "Select event source" to `Time-driven`, and pick a `Day timer` at whatever time of day works for you. Click **Save**.
+- **A new version is whatever you pushed last.** Keeping work in progress out of the real project means it's always ready to deploy a fix.
+- **Viewers can read the real project's latest push** right away, before any deployment.
 
-Reconciliation is incremental: each run compares the mirror against your source calendars and writes only what actually differs, so a day with no calendar changes writes nothing. Re-running is cheap and safe, and events edited in a source calendar are updated in the mirror automatically. See `CLAUDE.md` for details.
+User Properties, triggers and logs are per project, so it has its own settings, rules and mirror calendar, even under your own account. Changes tried there can only affect your own calendars.
 
-## 6. Block Events from a Web Page (Optional)
+To set it up:
 
-Instead of editing `config.js`, you can pick events to block from a page listing what's coming up.
+1. In an empty folder, run `clasp create --type standalone --title vCal-testing`, and copy the `.clasp.json` it makes to `.clasp-testing.json` in the repo.
+2. Run `npm run push:testing`. Leave the project's link sharing off.
+3. In the testing project's editor, click **Deploy**, then **Test deployments**, and open the **Web app** URL. Create a mirror, and pick your sources. Your real calendars are fine.
 
-1. Add this to `appsscript.json`, so the page runs as you and only you can open it:
-  ```json
-  "webapp": { "executeAs": "USER_DEPLOYING", "access": "MYSELF" },
-  ```
-2. Push it (`--force` is required for manifest changes, as in section 3):
-  ```
-   clasp push --force
-  ```
-3. In the Apps Script editor, click **Deploy** → **New deployment** → select type **Web app** → **Deploy**, and accept any permission prompts.
-4. Open the **Web app** URL it gives you, and bookmark it.
+It shares your account, so:
 
-After any later `clasp push`, the page keeps serving the old code until you publish it: **Deploy** → **Manage deployments** → edit (pencil icon) → **Version: New version** → **Deploy**. The URL stays the same.
+- **Don't pick your real mirror as a source.** It's listed in the picker.
+- **Prefer Sync now, and keep its sync paused.** Its runs count against your Calendar API quota.
 
-Each event offers **Block this**, for that one occurrence, or **Block all titled this**. **Your blocks** lists what you've blocked, with an **Unblock** button for each. Changes apply at the next sync, and `DRY_RUN` still applies. Events excluded by `config.js` are labelled but can only be changed by editing that file.
+`clasp -P` needs an absolute path, or it fails with "escapes project root". The npm script handles this.
 
-Blocks match on title and start time, which has a few consequences:
+## Update
 
-- **Block all titled this** applies across all your source calendars.
-- Renaming a blocked event, or moving a blocked occurrence, breaks its block, so the event returns to the mirror.
-- **Block this** also blocks any other event with the same title starting in the same minute, on any source calendar.
+1. Run `npm run push:testing`. It runs the tests first.
+2. Open the testing project's test deployment, and try the change with **Preview** and **Sync now**.
+3. Run `npm run push:prod`. This doesn't affect users, because triggers and the link run the deployed version.
+4. In the editor, click **Deploy**, then **Manage deployments**, edit the deployment, choose **New version** and click **Deploy**. The link stays the same, and every user's next run uses the new code.
 
+See `CLAUDE.md` for how the code works.

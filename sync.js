@@ -1,18 +1,15 @@
-// Main sync entry point. Wire this to a time-driven trigger manually from
-// the Apps Script UI once dry-run output has been reviewed and confirmed —
-// do not add the trigger in code.
+// The sync. mirrorCalendarSync() is the trigger entry point, and the page creates
+// each user's trigger once they've seen a preview.
 //
 // Reconciliation is INCREMENTAL: each mirrored event carries a stable
 // identity and a content signature in its private extended properties, so a
 // run compares the mirror against the desired state and writes only the
 // difference. A steady-state day typically writes nothing at all.
 
-var DRY_RUN = true;
-
 // Private extended-property keys set on every mirrored event.
 //
-// SOURCE_TAG_KEY records which source calendar an event came from (used for
-// log lines only). SYNC_KEY is the stable identity of the source instance
+// SOURCE_TAG_KEY records which source calendar an event came from (shown in a
+// preview only). SYNC_KEY is the stable identity of the source instance
 // and is what the diff matches on. SIGNATURE_KEY is a hash of the mirrored
 // content, so a changed source event can be detected without field-by-field
 // comparison.
@@ -48,18 +45,94 @@ var FIELD_SEPARATOR = String.fromCharCode(31);
 // run, so whatever is left over is simply picked up by the next one.
 var MAX_RUNTIME_MS = 4.5 * 60 * 1000;
 
+// The trigger entry point. A leftover trigger can't write anything once sync is
+// paused, because this returns before loading anything else.
 function mirrorCalendarSync() {
-  if (typeof CONFIG === 'undefined') {
-    throw new Error(
-      'CONFIG is not defined. Copy config.example.js to config.js and fill in your values.'
-    );
+  if (!loadStoredSettings().enabled) {
+    return;
   }
+  // No approval: only someone at the page can approve a large delete.
+  runSync(0);
+}
 
-  // Blocks made from the web page. Globals are fresh each execution, so this
-  // lasts only for this run.
-  CONFIG.rules = CONFIG.rules.concat(loadBlockRules());
+// One real sync, from a trigger or the page's Sync now. Returns the status, or
+// null when another run holds the lock, which isn't an error: Sync now can overlap
+// a scheduled run. Failures are recorded so the page can show them, then rethrown.
+//
+// `approvedDeletes` is how many deletes the user last saw in a preview, and only
+// Sync now passes it. See shouldStopForDeletes().
+function runSync(approvedDeletes) {
+  var lock = LockService.getUserLock();
+  if (!lock.tryLock(0)) {
+    return null;
+  }
+  try {
+    var startedAt = Date.now();
+    assertReadyToSync(loadSettings());
+    var built = buildSyncPlan(startedAt);
+    if (shouldStopForDeletes(built.plan, approvedDeletes)) {
+      throw new Error(describeMassDelete(built.plan));
+    }
+    logTiming('applyPlan start', startedAt);
+    var counts = applyPlan(built.plan, startedAt);
+    logTiming('applyPlan done', startedAt);
+    clearApprovedDeletes();
+    var status = {
+      lastRunAt: new Date().toISOString(),
+      created: counts.created,
+      updated: counts.updated,
+      deleted: counts.deleted,
+      unchanged: counts.unchanged,
+      deferred: counts.deferred,
+      error: '',
+    };
+    recordStatus(status);
+    return status;
+  } catch (e) {
+    recordStatus({
+      lastRunAt: new Date().toISOString(),
+      created: 0,
+      updated: 0,
+      deleted: 0,
+      unchanged: 0,
+      deferred: 0,
+      error: describeRunError(e),
+    });
+    throw e;
+  } finally {
+    lock.releaseLock();
+  }
+}
 
-  var startedAt = Date.now();
+// A preview is only required once, but a later rule like /.+/ or a removed source
+// can still empty the mirror. So a run that would delete more than half of it, and
+// at least this many events, needs someone to have seen that first.
+var MASS_DELETE_MINIMUM = 10;
+
+function countMirrorEvents(plan) {
+  // Creates aren't in the mirror yet. Everything else in the plan is.
+  return plan.updates.length + plan.deletes.length + plan.unchanged;
+}
+
+function isMassDelete(plan) {
+  return plan.deletes.length >= MASS_DELETE_MINIMUM && plan.deletes.length > countMirrorEvents(plan) / 2;
+}
+
+// A preview's approval covers only as many deletes as it showed. A larger delete
+// means something changed afterwards, which nobody has seen.
+function shouldStopForDeletes(plan, approvedDeletes) {
+  return isMassDelete(plan) && plan.deletes.length > (approvedDeletes || 0);
+}
+
+// Counts only, because this reaches the owner's logs when thrown.
+function describeMassDelete(plan) {
+  return 'vCal stopped before deleting ' + plan.deletes.length + ' of the ' + countMirrorEvents(plan) +
+    ' events in your mirror. Click Preview to check the list, then Sync now to go ahead.';
+}
+
+// Computes what a sync would change, without writing anything, so that Preview and
+// a real sync can't disagree. Expects loadSettings() to have run.
+function buildSyncPlan(startedAt) {
   logTiming('run start', startedAt);
 
   var windowStart = new Date();
@@ -75,21 +148,72 @@ function mirrorCalendarSync() {
     plan.deletes.length + ' delete(s), ' + plan.unchanged + ' unchanged',
     startedAt
   );
+  // Deletes come from the mirror, so they need local times for the page. Only
+  // deletes, because a steady-state run shouldn't format every mirrored event.
+  plan.deletes.forEach(function (entry) {
+    if (entry.rawStart) {
+      entry.startLabel = describeStart(localStartParts(entry.rawStart, CONFIG.timeZone));
+    }
+  });
+  return { plan: plan, excluded: partitioned.excluded };
+}
 
-  if (DRY_RUN) {
-    logDryRun(plan, partitioned.excluded, windowStart, windowEnd);
-    return;
-  }
+// The plan as plain strings, for the page. Holds calendar text, so it goes to the
+// page and never to a log.
+function summarizePlan(plan, excluded) {
+  var row = function (entry, start, reason) {
+    return { title: entry.title || '', start: start, source: entry.sourceName, reason: reason };
+  };
+  return {
+    massDelete: isMassDelete(plan),
+    counts: {
+      creates: plan.creates.length,
+      updates: plan.updates.length,
+      deletes: plan.deletes.length,
+      unchanged: plan.unchanged,
+      excluded: excluded.length,
+    },
+    creates: plan.creates.map(function (entry) {
+      return row(entry, entry.startLabel, 'In a source calendar, not yet in the mirror');
+    }),
+    updates: plan.updates.map(function (entry) {
+      return row(entry.desired, entry.desired.startLabel, 'Changed in its source calendar');
+    }),
+    deletes: plan.deletes.map(function (entry) {
+      var reason = 'Not created by vCal';
+      if (entry.duplicate) {
+        reason = 'A duplicate copy of another event in the mirror';
+      } else if (entry.syncKey) {
+        reason = 'No longer in a source calendar, or now excluded by a rule';
+      }
+      return row(entry, entry.startLabel || entry.start, reason);
+    }),
+    excludes: excluded.map(function (entry) {
+      return row(entry, entry.startLabel, describeRule(entry.rule));
+    }),
+  };
+}
 
-  logTiming('applyPlan start', startedAt);
-  applyPlan(plan, startedAt);
-  logTiming('applyPlan done', startedAt);
+// The calendar's name goes on a separate property, because the message itself
+// reaches the owner's logs when the error is rethrown.
+function tagSourceError(e, sourceName) {
+  e.sourceName = sourceName;
+  return e;
+}
+
+// What the page shows for a failed run.
+function describeRunError(e) {
+  var message = (e && e.message) || String(e);
+  return e && e.sourceName ? 'Could not read "' + e.sourceName + '": ' + message : message;
 }
 
 // Records how far a run got (issue #7). When Apps Script kills an execution,
 // the last line logged shows where it stopped. Uses console.log rather than
 // Logger.log so the line goes to Cloud Logging as it is emitted, in case
 // Logger output does not survive the kill.
+//
+// The owner can read every user's logs, so labels hold only counts and calendar
+// numbers, never event titles, calendar names, calendar ids or rule text.
 function logTiming(label, startedAt) {
   console.log('[timing ' + ((Date.now() - startedAt) / 1000).toFixed(1) + 's] ' + label);
 }
@@ -101,43 +225,52 @@ function logTiming(label, startedAt) {
 function collectEvents(windowStart, windowEnd, startedAt) {
   var included = [];
   var excluded = [];
-  CONFIG.sourceCalendars.forEach(function (source) {
-    // Checked here, once per calendar rather than once per event, so a typo in
-    // the config surfaces as one log line instead of failing every write.
+  CONFIG.sourceCalendars.forEach(function (source, sourceIndex) {
+    var label = 'calendar ' + (sourceIndex + 1);
+    // Checked here, once per calendar rather than once per event, so a bad value
+    // surfaces as one log line instead of failing every write.
     if (source.color && !isValidEventColorId(source.color)) {
-      Logger.log(
-        'WARNING: source calendar "' + source.name + '" has color "' + source.color +
-        '", which is not one of ' + VALID_EVENT_COLOR_IDS.join('/') + '; ignoring it.'
-      );
+      Logger.log('WARNING: ' + label + ' has an invalid colour; ignoring it.');
     }
-    // Errors are deliberately not caught. Skipping an unreadable calendar would
-    // leave its events out of the desired state, and the diff would then delete
-    // all of their mirrored copies, even on a temporary API error.
-    logTiming('list start: ' + source.name, startedAt);
-    var items = listSourceEvents(source.id, windowStart, windowEnd);
-    logTiming('list done: ' + source.name + ', ' + items.length + ' event(s)', startedAt);
+    // Errors always propagate, tagged so the page can name the calendar. Skipping
+    // an unreadable calendar would leave its events out of the desired state, and
+    // the diff would then delete all of their mirrored copies, even on a temporary
+    // API error.
+    logTiming('list start: ' + label, startedAt);
+    var items;
+    try {
+      items = listSourceEvents(source.id, windowStart, windowEnd);
+    } catch (e) {
+      throw tagSourceError(e, source.name);
+    }
+    logTiming('list done: ' + label + ', ' + items.length + ' event(s)', startedAt);
     items.forEach(function (item) {
       var title = item.summary || '';
+      // Rules follow the user's time zone. The sync key keeps parseEventStart(),
+      // so that it stays stable.
+      var parts = localStartParts(item.start, CONFIG.timeZone);
       var startTime = parseEventStart(item.start);
-      if (matchesRules(title, startTime)) {
+      if (matchesRules(title, parts)) {
         excluded.push({
           title: title,
           startTime: startTime,
+          startLabel: describeStart(parts),
           sourceName: source.name,
-          rule: findMatchingRule(title, startTime),
+          rule: findMatchingRule(title, parts),
         });
       } else {
         included.push({
           item: item,
           title: title,
           startTime: startTime,
+          startLabel: describeStart(parts),
           sourceCalendarId: source.id,
           sourceName: source.name,
           sourceColor: source.color,
         });
       }
     });
-    logTiming('filter done: ' + source.name, startedAt);
+    logTiming('filter done: ' + label, startedAt);
   });
   return { included: included, excluded: excluded };
 }
@@ -195,6 +328,7 @@ function buildDesiredEvents(included, startedAt) {
       sourceName: match.sourceName,
       title: match.title,
       startTime: match.startTime,
+      startLabel: match.startLabel,
       colorId: resource.colorId || '',
     };
 
@@ -289,10 +423,10 @@ function mapVisibility(visibility) {
 // Reads every event currently in the mirror window, indexed by sync key.
 // Events without a sync key (created by an older version of this script, or
 // added by hand) are returned separately as `untracked` — the mirror
-// calendar is treated as owned by this script, so those are cleaned up.
+// calendar is treated as owned by this script, so those are cleaned up. Extra
+// copies with the same key are returned as `duplicates`, and cleaned up too.
 function fetchMirrorIndex(windowStart, windowEnd) {
-  var tracked = {};
-  var untracked = [];
+  var index = emptyMirrorIndex();
   var pageToken = null;
 
   do {
@@ -305,28 +439,40 @@ function fetchMirrorIndex(windowStart, windowEnd) {
     });
 
     (response.items || []).forEach(function (item) {
-      var privateProps = (item.extendedProperties && item.extendedProperties.private) || {};
-      var syncKey = privateProps[SYNC_KEY];
-      var entry = {
-        id: item.id,
-        syncKey: syncKey,
-        signature: privateProps[SIGNATURE_KEY],
-        sourceName: privateProps[SOURCE_TAG_KEY] || 'unknown',
-        title: item.summary,
-        start: (item.start && (item.start.dateTime || item.start.date)) || 'unknown',
-        colorId: item.colorId || '',
-      };
-      if (syncKey) {
-        tracked[syncKey] = entry;
-      } else {
-        untracked.push(entry);
-      }
+      addMirrorItem(index, item);
     });
 
     pageToken = response.nextPageToken;
   } while (pageToken);
 
-  return { tracked: tracked, untracked: untracked };
+  return index;
+}
+
+function emptyMirrorIndex() {
+  return { tracked: {}, untracked: [], duplicates: [] };
+}
+
+function addMirrorItem(index, item) {
+  var privateProps = (item.extendedProperties && item.extendedProperties.private) || {};
+  var syncKey = privateProps[SYNC_KEY];
+  var entry = {
+    id: item.id,
+    syncKey: syncKey,
+    signature: privateProps[SIGNATURE_KEY],
+    sourceName: privateProps[SOURCE_TAG_KEY] || 'unknown',
+    title: item.summary,
+    start: (item.start && (item.start.dateTime || item.start.date)) || 'unknown',
+    rawStart: item.start,
+    colorId: item.colorId || '',
+  };
+  if (!syncKey) {
+    index.untracked.push(entry);
+  } else if (index.tracked[syncKey]) {
+    entry.duplicate = true;
+    index.duplicates.push(entry);
+  } else {
+    index.tracked[syncKey] = entry;
+  }
 }
 
 // Diffs desired against existing. Anything in the mirror that no longer
@@ -363,96 +509,27 @@ function buildPlan(desired, existing) {
     deletes.push(entry);
   });
 
+  existing.duplicates.forEach(function (entry) {
+    deletes.push(entry);
+  });
+
   return { creates: creates, updates: updates, deletes: deletes, unchanged: unchanged };
 }
 
-function logDryRun(plan, excluded, windowStart, windowEnd) {
-  Logger.log('=== DRY RUN: mirrorCalendarSync (no changes made) ===');
-  Logger.log('Window: ' + windowStart + ' through ' + windowEnd);
-  Logger.log(
-    'Summary: ' + plan.creates.length + ' create(s), ' + plan.updates.length + ' update(s), ' +
-    plan.deletes.length + ' delete(s), ' + plan.unchanged + ' unchanged, ' +
-    excluded.length + ' excluded by rules.'
-  );
-
-  Logger.log('Intended creates: ' + plan.creates.length);
-  plan.creates.forEach(function (item) {
-    Logger.log(
-      '  CREATE "' + item.title + '" at ' + item.startTime +
-      ' (source: ' + item.sourceName + ', colour: ' + describeColor(item.colorId) + ')'
-    );
-  });
-
-  Logger.log('Intended updates: ' + plan.updates.length);
-  plan.updates.forEach(function (item) {
-    Logger.log(
-      '  UPDATE "' + item.desired.title + '" at ' + item.desired.startTime +
-      ' (source: ' + item.desired.sourceName + ', colour: ' + describeColor(item.desired.colorId) +
-      ', was "' + item.previous.title + '" at ' + item.previous.start +
-      ' colour ' + describeColor(item.previous.colorId) + ')'
-    );
-  });
-
-  Logger.log('Intended deletes: ' + plan.deletes.length);
-  plan.deletes.forEach(function (item) {
-    var reason = item.syncKey ? 'no longer in source' : 'untracked (pre-incremental or manually added)';
-    Logger.log('  DELETE "' + item.title + '" on ' + item.start + ' (source: ' + item.sourceName + ', ' + reason + ')');
-  });
-
-  Logger.log('Unchanged (left alone): ' + plan.unchanged);
-
-  Logger.log('Excluded (blacklisted): ' + excluded.length);
-  excluded.forEach(function (match) {
-    Logger.log(
-      '  EXCLUDE "' + match.title + '" at ' + match.startTime +
-      ' (source: ' + match.sourceName + ', rule: ' + describeRule(match.rule) + ')'
-    );
-  });
-
-  Logger.log('=== END DRY RUN ===');
-}
-
-// Names the event colours in dry-run output, so a colour-only update reads as
-// "Banana -> Basil" rather than "5 -> 10".
+// Names for the event colours, for the page's colour dropdown.
 var EVENT_COLOR_NAMES = {
   '1': 'Lavender', '2': 'Sage', '3': 'Grape', '4': 'Flamingo',
   '5': 'Banana', '6': 'Tangerine', '7': 'Peacock', '8': 'Graphite',
   '9': 'Blueberry', '10': 'Basil', '11': 'Tomato',
 };
 
-function describeColor(colorId) {
-  if (!colorId) {
-    return 'calendar default';
-  }
-  var name = EVENT_COLOR_NAMES[String(colorId)];
-  return name ? name + ' (' + colorId + ')' : String(colorId);
-}
-
-function describeRule(rule) {
-  if (!rule) {
-    return 'unknown';
-  }
-  var value = rule.value instanceof RegExp ? rule.value.toString() : '"' + rule.value + '"';
-  var desc = rule.type + ' ' + value;
-  if (rule.days) {
-    desc += ', days=' + rule.days.join(',');
-  }
-  if (rule.time) {
-    desc += ', time=' + rule.time.start + '-' + rule.time.end;
-  }
-  if (rule.date) {
-    desc += ', date=' + rule.date.start + ' to ' + rule.date.end;
-  }
-  return desc;
-}
-
 // Applies the plan, stopping cleanly if the run approaches the Apps Script
 // execution limit. Creates and updates run before deletes so that running
 // out of time leaves the mirror with extra stale events rather than missing
 // ones — and because the plan is recomputed from scratch every run, the
-// remainder is simply completed by the next one.
+// remainder is simply completed by the next one. Returns the counts.
 function applyPlan(plan, startedAt) {
-  var counts = { created: 0, updated: 0, deleted: 0, deferred: 0 };
+  var counts = { created: 0, updated: 0, deleted: 0, unchanged: plan.unchanged, deferred: 0 };
 
   var outOfTime = function () {
     return Date.now() - startedAt > MAX_RUNTIME_MS;
@@ -460,41 +537,38 @@ function applyPlan(plan, startedAt) {
 
   for (var i = 0; i < plan.creates.length; i++) {
     if (outOfTime()) {
-      counts.deferred += plan.creates.length - i;
       return finishRun(plan, counts, true);
     }
     var create = plan.creates[i];
     Calendar.Events.insert(create.resource, CONFIG.mirrorCalendarId);
     counts.created++;
-    Logger.log('CREATE "' + create.title + '" at ' + create.startTime + ' (source: ' + create.sourceName + ')');
   }
 
   for (var j = 0; j < plan.updates.length; j++) {
     if (outOfTime()) {
-      counts.deferred += plan.updates.length - j;
       return finishRun(plan, counts, true);
     }
     var update = plan.updates[j];
     Calendar.Events.update(update.desired.resource, CONFIG.mirrorCalendarId, update.id);
     counts.updated++;
-    Logger.log('UPDATE "' + update.desired.title + '" at ' + update.desired.startTime + ' (source: ' + update.desired.sourceName + ')');
   }
 
   for (var k = 0; k < plan.deletes.length; k++) {
     if (outOfTime()) {
-      counts.deferred += plan.deletes.length - k;
       return finishRun(plan, counts, true);
     }
     var remove = plan.deletes[k];
     Calendar.Events.remove(CONFIG.mirrorCalendarId, remove.id);
     counts.deleted++;
-    Logger.log('DELETE "' + remove.title + '" on ' + remove.start + ' (source: ' + remove.sourceName + ')');
   }
 
   return finishRun(plan, counts, false);
 }
 
 function finishRun(plan, counts, ranOutOfTime) {
+  // Everything planned but not done, whichever step the run stopped in.
+  counts.deferred = plan.creates.length + plan.updates.length + plan.deletes.length -
+    counts.created - counts.updated - counts.deleted;
   Logger.log(
     'mirrorCalendarSync: ' + counts.created + ' created, ' + counts.updated + ' updated, ' +
     counts.deleted + ' deleted, ' + plan.unchanged + ' unchanged.'
@@ -505,6 +579,7 @@ function finishRun(plan, counts, ranOutOfTime) {
       counts.deferred + ' change(s) deferred to the next run. Run again to continue.'
     );
   }
+  return counts;
 }
 
 // --- Identity and change detection (pure — no CalendarApp, no API) --------
