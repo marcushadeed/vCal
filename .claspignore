@@ -7,3 +7,7 @@ package-lock.json
 config.example.js
 dev/**
 config.js
+.clasp-testing.json
+.clasp.json.old
+.claude/**
+task-8/**

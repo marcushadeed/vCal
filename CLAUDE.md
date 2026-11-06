@@ -126,7 +126,7 @@ When an event title has multiple instances per week, use time-based filters to e
 
 ## Testing
 
-`TZ=America/New_York node dev/run-tests.js` runs `runTests()` locally. It needs only Node, and it also compiles the page's inline script. Run it in a second time zone too, such as `TZ=Asia/Tokyo`, when changing anything about dates or times. The runner has stubs only for `Logger`, `console` and `Utilities`, so a test that touches `PropertiesService`, `Calendar`, `ScriptApp`, `LockService` or `CalendarApp` fails with a `ReferenceError`. It never loads `config.js`.
+`npm test`, or `TZ=America/New_York node dev/run-tests.js`, runs `runTests()` locally. It needs only Node, and it also compiles the page's inline script. Run it in a second time zone too, such as `TZ=Asia/Tokyo`, when changing anything about dates or times. The runner has stubs only for `Logger`, `console` and `Utilities`, so a test that touches `PropertiesService`, `Calendar`, `ScriptApp`, `LockService` or `CalendarApp` fails with a `ReferenceError`. It never loads `config.js`.
 
 `runTests()` runs **without touching the Calendar API or User Properties**, so it's fast and safe to run from the Apps Script editor too. It covers these pure functions:
 
@@ -146,7 +146,20 @@ When an event title has multiple instances per week, use time-based filters to e
 
 Anything added to `computeSignature()` needs a corresponding case in `testComputeSignature()`; a field that is hashed but untested will silently stop triggering updates if it is ever dropped.
 
-The DOM has no automated tests. Behaviour on the page and against live Google services is checked by hand, using the steps in `docs/superpowers/specs/2026-11-04-shared-link-design.md`.
+`npm test` runs it in both New York and Tokyo.
+
+The DOM has no automated tests. Behaviour on the page and against live Google services is checked by hand, using the steps in `docs/superpowers/specs/2026-11-04-shared-link-design.md`, **in the testing project, never in prod**.
+
+### Testing Project
+There are two Apps Script projects. `.clasp.json` is **prod**, the shared project users run. `.clasp-testing.json` is **vCal-testing**, private, used for every live check. Both are gitignored.
+
+Users only get code when prod is deployed, so a push to prod doesn't break them. The testing project exists anyway so that prod's latest push is always releasable, since a new version takes whatever was pushed last, and because viewers can read prod's latest push.
+
+- **Push with `npm run push:testing`**, which runs the tests and then `clasp -P "$PWD/.clasp-testing.json" push --force`. `-P` needs an absolute path, or clasp fails with "escapes project root".
+- **A bare `clasp push` goes to prod.** Only run `npm run push:prod` when the user asks. Never run `clasp deploy` or redeploy against prod unless the user asks, because a deployment reaches every user's next run.
+- **Don't test with a test deployment of the prod project.** It shares that account's User Properties, trigger and mirror with the real one.
+- The testing project runs under the owner's own account, with its own settings, rules and mirror, since User Properties and triggers are per project. The owner is fine with it using their real calendars as sources. It must never use the real mirror as a source.
+- **Don't reuse the old private project** (`.clasp.json.old`). It held `config.js`.
 
 ## Scheduled Trigger
 

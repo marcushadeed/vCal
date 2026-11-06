@@ -77,7 +77,7 @@ Read these first. They all follow from how shared Apps Script web apps work.
 - **Use a new Apps Script project.** Don't share a project that has ever held personal calendar data, because it may remain in saved versions.
 - **The project must stay shared as Anyone with the link: Viewer.** A user's trigger fails without it, before any of vCal's code runs. So turning sharing off breaks every user's sync, with no recorded error. The page can only warn them that a sync is overdue.
 - **Never push anything personal.** Viewers can read the code. `config.js` is in `.claspignore`, so check that `clasp status` doesn't list it.
-- **A deployment reaches every user's next scheduled run**, with no action from them. Run the tests and try the change on a separate test deployment first, using a throwaway account. A test deployment shares settings, rules and the mirror with the real one for whichever account opens it, so **Sync now** there runs untested code against that account's real mirror.
+- **A deployment reaches every user's next scheduled run**, with no action from them. Run the tests and try the change in a separate testing project first (see [Testing project](#testing-project)). Don't use a test deployment of the real project: it shares settings, rules and the mirror with the real one for whichever account opens it, so **Sync now** there runs untested code against that account's real mirror.
 - **You can read every user's logs.** So logs must never contain event titles, calendar names, calendar IDs or rule text.
 - **Unverified apps are limited to 100 users, for the lifetime of the project.** Users also see the unverified-app warning.
 
@@ -97,10 +97,10 @@ Turn on **Google Apps Script API** at [script.google.com/home/usersettings](http
 ## Run the tests
 
 ```
-TZ=America/New_York node dev/run-tests.js
+npm test
 ```
 
-This needs only Node, and touches no calendar or Apps Script project. It also checks that the page's script compiles. `runTests` can be run in the Apps Script editor too.
+This runs `dev/run-tests.js` in two time zones. It needs only Node, and touches no calendar or Apps Script project. It also checks that the page's script compiles. `runTests` can be run in the Apps Script editor too.
 
 ## Create and deploy
 
@@ -126,11 +126,35 @@ This needs only Node, and touches no calendar or Apps Script project. It also ch
 6. In the Apps Script editor, click **Share**, and set the project to **Anyone with the link: Viewer**.
 7. In the editor, click **Deploy**, then **Manage deployments**, and copy the **Web app** URL. That's the link to share.
 
+## Testing project
+
+A second Apps Script project, **vCal-testing**, for trying changes against live Google services. Its `.clasp-testing.json` is gitignored.
+
+Pushing to the real project doesn't reach users, since they run the deployed version. The testing project is still worth it, because:
+
+- **A new version is whatever you pushed last.** Keeping work in progress out of the real project means it's always ready to deploy a fix.
+- **Viewers can read the real project's latest push** right away, before any deployment.
+
+User Properties, triggers and logs are per project, so it has its own settings, rules and mirror calendar, even under your own account. Changes tried there can only affect your own calendars.
+
+To set it up:
+
+1. In an empty folder, run `clasp create --type standalone --title vCal-testing`, and copy the `.clasp.json` it makes to `.clasp-testing.json` in the repo.
+2. Run `npm run push:testing`. Leave the project's link sharing off.
+3. In the testing project's editor, click **Deploy**, then **Test deployments**, and open the **Web app** URL. Create a mirror, and pick your sources. Your real calendars are fine.
+
+It shares your account, so:
+
+- **Don't pick your real mirror as a source.** It's listed in the picker.
+- **Prefer Sync now, and keep its sync paused.** Its runs count against your Calendar API quota.
+
+`clasp -P` needs an absolute path, or it fails with "escapes project root". The npm script handles this.
+
 ## Update
 
-1. Run the tests.
-2. Push with `clasp push --force`. This doesn't affect users, because triggers and the link run the deployed version.
-3. Try it on a separate test deployment, signed in with a throwaway account.
+1. Run `npm run push:testing`. It runs the tests first.
+2. Open the testing project's test deployment, and try the change with **Preview** and **Sync now**.
+3. Run `npm run push:prod`. This doesn't affect users, because triggers and the link run the deployed version.
 4. In the editor, click **Deploy**, then **Manage deployments**, edit the deployment, choose **New version** and click **Deploy**. The link stays the same, and every user's next run uses the new code.
 
 See `CLAUDE.md` for how the code works.

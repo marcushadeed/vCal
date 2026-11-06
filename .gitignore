@@ -1,3 +1,5 @@
 node_modules/
 config.js
 .clasp.json
+.clasp-testing.json
+.clasp.json.old
