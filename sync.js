@@ -45,6 +45,30 @@ var FIELD_SEPARATOR = String.fromCharCode(31);
 // run, so whatever is left over is simply picked up by the next one.
 var MAX_RUNTIME_MS = 4.5 * 60 * 1000;
 
+// --- Progress -----------------------------------------------------------------
+
+// How often the write phase may record its progress. Reads report once per API
+// call, which costs far more than the record, so they aren't limited.
+var PROGRESS_INTERVAL_MS = 1000;
+
+function noProgress() {}
+
+// Returns report(phase, done, total) for a run the page is watching. `put` stores
+// the JSON where getSyncProgress() reads it, and `now` returns the time in ms.
+// Phases are 'read' (calendar `done` of `total`), 'mirror' and 'write' (changes
+// made). Counts only: no titles or calendar names. Pure apart from `put`.
+function makeProgressReporter(put, now) {
+  var lastAt = null;
+  return function (phase, done, total) {
+    var at = now();
+    if (phase === 'write' && done > 0 && done < total && at - lastAt < PROGRESS_INTERVAL_MS) {
+      return;
+    }
+    lastAt = at;
+    put(JSON.stringify({ phase: phase, done: done, total: total }));
+  };
+}
+
 // The trigger entry point. A leftover trigger can't write anything once sync is
 // paused, because this returns before loading anything else.
 function mirrorCalendarSync() {
@@ -60,8 +84,9 @@ function mirrorCalendarSync() {
 // a scheduled run. Failures are recorded so the page can show them, then rethrown.
 //
 // `approvedDeletes` is how many deletes the user last saw in a preview, and only
-// Sync now passes it. See shouldStopForDeletes().
-function runSync(approvedDeletes) {
+// Sync now passes it. See shouldStopForDeletes(). `report` is optional, and only
+// Sync now passes one. See makeProgressReporter().
+function runSync(approvedDeletes, report) {
   var lock = LockService.getUserLock();
   if (!lock.tryLock(0)) {
     return null;
@@ -69,12 +94,12 @@ function runSync(approvedDeletes) {
   try {
     var startedAt = Date.now();
     assertReadyToSync(loadSettings());
-    var built = buildSyncPlan(startedAt);
+    var built = buildSyncPlan(startedAt, report);
     if (shouldStopForDeletes(built.plan, approvedDeletes)) {
       throw new Error(describeMassDelete(built.plan));
     }
     logTiming('applyPlan start', startedAt);
-    var counts = applyPlan(built.plan, startedAt);
+    var counts = applyPlan(built.plan, startedAt, report);
     logTiming('applyPlan done', startedAt);
     clearApprovedDeletes();
     var status = {
@@ -132,14 +157,16 @@ function describeMassDelete(plan) {
 
 // Computes what a sync would change, without writing anything, so that Preview and
 // a real sync can't disagree. Expects loadSettings() to have run.
-function buildSyncPlan(startedAt) {
+function buildSyncPlan(startedAt, report) {
+  report = report || noProgress;
   logTiming('run start', startedAt);
 
   var windowStart = new Date();
   var windowEnd = new Date(windowStart.getTime() + CONFIG.lookaheadDays * 24 * 60 * 60 * 1000);
 
-  var partitioned = collectEvents(windowStart, windowEnd, startedAt);
+  var partitioned = collectEvents(windowStart, windowEnd, startedAt, report);
   var desired = buildDesiredEvents(partitioned.included, startedAt);
+  report('mirror', 0, 0);
   var existing = fetchMirrorIndex(windowStart, windowEnd);
   logTiming('fetchMirrorIndex done', startedAt);
   var plan = buildPlan(desired, existing);
@@ -222,7 +249,7 @@ function logTiming(label, startedAt) {
 // not match any blacklist rule) and `excluded` (filtered out — matched a
 // blacklist rule). Rules are a blacklist: an event is mirrored by default
 // unless CONFIG.rules says otherwise (see CLAUDE.md).
-function collectEvents(windowStart, windowEnd, startedAt) {
+function collectEvents(windowStart, windowEnd, startedAt, report) {
   var included = [];
   var excluded = [];
   CONFIG.sourceCalendars.forEach(function (source, sourceIndex) {
@@ -237,6 +264,7 @@ function collectEvents(windowStart, windowEnd, startedAt) {
     // the diff would then delete all of their mirrored copies, even on a temporary
     // API error.
     logTiming('list start: ' + label, startedAt);
+    report('read', sourceIndex + 1, CONFIG.sourceCalendars.length);
     var items;
     try {
       items = listSourceEvents(source.id, windowStart, windowEnd);
@@ -528,8 +556,16 @@ var EVENT_COLOR_NAMES = {
 // out of time leaves the mirror with extra stale events rather than missing
 // ones — and because the plan is recomputed from scratch every run, the
 // remainder is simply completed by the next one. Returns the counts.
-function applyPlan(plan, startedAt) {
+function applyPlan(plan, startedAt, report) {
+  report = report || noProgress;
   var counts = { created: 0, updated: 0, deleted: 0, unchanged: plan.unchanged, deferred: 0 };
+  var total = plan.creates.length + plan.updates.length + plan.deletes.length;
+  var wrote = function () {
+    report('write', counts.created + counts.updated + counts.deleted, total);
+  };
+  if (total > 0) {
+    report('write', 0, total);
+  }
 
   var outOfTime = function () {
     return Date.now() - startedAt > MAX_RUNTIME_MS;
@@ -542,6 +578,7 @@ function applyPlan(plan, startedAt) {
     var create = plan.creates[i];
     Calendar.Events.insert(create.resource, CONFIG.mirrorCalendarId);
     counts.created++;
+    wrote();
   }
 
   for (var j = 0; j < plan.updates.length; j++) {
@@ -551,6 +588,7 @@ function applyPlan(plan, startedAt) {
     var update = plan.updates[j];
     Calendar.Events.update(update.desired.resource, CONFIG.mirrorCalendarId, update.id);
     counts.updated++;
+    wrote();
   }
 
   for (var k = 0; k < plan.deletes.length; k++) {
@@ -560,6 +598,7 @@ function applyPlan(plan, startedAt) {
     var remove = plan.deletes[k];
     Calendar.Events.remove(CONFIG.mirrorCalendarId, remove.id);
     counts.deleted++;
+    wrote();
   }
 
   return finishRun(plan, counts, false);

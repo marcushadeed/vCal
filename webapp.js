@@ -3,7 +3,8 @@
 // the README.
 //
 // Everything sent to the page is plain JSON: a Date or RegExp doesn't survive
-// google.script.run. Every function except doGet() starts with loadSettings().
+// google.script.run. Every function except doGet() and getSyncProgress() starts
+// with loadSettings().
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('index')
@@ -210,11 +211,12 @@ function dismissRemovedRules() {
 
 // Makes no writes to any calendar. Returns its failure instead of throwing,
 // because the error can name a calendar and a thrown one reaches the owner's logs.
-function previewSync() {
+// `token` names this run's progress. See getSyncProgress().
+function previewSync(token) {
   try {
     var settings = loadSettings();
     assertReadyToSync(settings);
-    var built = buildSyncPlan(Date.now());
+    var built = buildSyncPlan(Date.now(), progressReporter(token));
     // Read again, because a preview can take minutes.
     var latest = loadStoredSettings();
     latest.previewed = true;
@@ -227,17 +229,50 @@ function previewSync() {
   }
 }
 
-function syncNow() {
+function syncNow(token) {
   var settings = loadSettings();
   assertReadyToSync(settings);
   assertPreviewed(settings);
   try {
-    var status = runSync(settings.approvedDeletes);
+    var status = runSync(settings.approvedDeletes, progressReporter(token));
     return status ? { status: status } : { status: loadStatus(), busy: true };
   } catch (e) {
     // runSync() has already recorded it, and the page shows the status.
     return { status: loadStatus() };
   }
+}
+
+// --- Progress -----------------------------------------------------------------
+
+var PROGRESS_CACHE_PREFIX = 'progress:';
+// Longer than any execution can run.
+var PROGRESS_EXPIRY_SECONDS = 10 * 60;
+
+// The page makes up a token for each Preview or Sync now, then polls this with it
+// while the call runs. Skips loadSettings(), which would cost a Calendar API call
+// on every poll. Returns null until the run has reported anything.
+function getSyncProgress(token) {
+  if (!isValidProgressToken(token)) {
+    return null;
+  }
+  var json = CacheService.getUserCache().get(PROGRESS_CACHE_PREFIX + token);
+  return json ? JSON.parse(json) : null;
+}
+
+// A run reports nothing without a valid token, so the trigger writes nothing.
+function progressReporter(token) {
+  if (!isValidProgressToken(token)) {
+    return noProgress;
+  }
+  var cache = CacheService.getUserCache();
+  return makeProgressReporter(function (json) {
+    cache.put(PROGRESS_CACHE_PREFIX + token, json, PROGRESS_EXPIRY_SECONDS);
+  }, Date.now);
+}
+
+// Pure.
+function isValidProgressToken(token) {
+  return typeof token === 'string' && /^[a-z0-9]{1,40}$/.test(token);
 }
 
 // Replaces any existing trigger, so this also changes the frequency.

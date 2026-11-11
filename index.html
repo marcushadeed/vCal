@@ -78,6 +78,18 @@
     /* Disabled while working, so every control is blocked without a rebuild. */
     #content { min-width: 0; margin: 0; padding: 0; border: 0; }
     .warning { background: var(--warn-bg); color: var(--warn-text); }
+    /* Shown while working (issue #10). Modal, so nothing behind it can be used. */
+    #working {
+      width: min(360px, calc(100vw - 32px));
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    #working::backdrop { background: rgba(0, 0, 0, 0.4); }
+    #working p { margin: 0 0 12px; }
+    #working progress { display: block; width: 100%; }
     .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 0; }
     .row .main { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
     .row .time { width: 64px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -103,8 +115,12 @@
 
   <div id="banners">
     <div id="error" class="notice error" role="alert" hidden></div>
-    <div id="progress" class="notice warning" role="status" hidden>Working. This can take a few minutes.</div>
   </div>
+
+  <dialog id="working" aria-labelledby="working-text">
+    <p id="working-text" role="status">Working...</p>
+    <progress id="working-bar"></progress>
+  </dialog>
 
   <fieldset id="content">
     <div id="warnings"></div>
@@ -128,6 +144,12 @@
     var data = null;
     var busy = false;
     var working = false;
+    // Names the Preview or Sync now whose progress is being polled, or null.
+    var progressToken = null;
+    var modalTimer = null;
+    // Quick saves finish before the modal would appear, so it doesn't flash.
+    var MODAL_DELAY_MS = 250;
+    var PROGRESS_POLL_MS = 1500;
 
     // Everything typed into the page lives here rather than in the inputs, because
     // each render rebuilds them. A failed save must keep what the user typed.
@@ -143,7 +165,9 @@
     var previewResult = null;
 
     var errorEl = document.getElementById('error');
-    var progressEl = document.getElementById('progress');
+    var workingEl = document.getElementById('working');
+    var workingTextEl = document.getElementById('working-text');
+    var workingBarEl = document.getElementById('working-bar');
     var warningsEl = document.getElementById('warnings');
     var loadingEl = document.getElementById('loading');
     var setupEl = document.getElementById('setup');
@@ -821,15 +845,85 @@
       }
     }
 
-    // Starting only disables the page. Rebuilding it then made it jump.
+    // --- Working modal -----------------------------------------------------------
+
+    // Escape mustn't close it while busy. Chrome closes a dialog anyway on a second
+    // Escape, so it's reopened.
+    workingEl.addEventListener('cancel', function (event) {
+      event.preventDefault();
+    });
+    workingEl.addEventListener('close', function () {
+      if (busy) workingEl.showModal();
+    });
+
+    // `progress` is what getSyncProgress() returned, or null. Counts only. The bar
+    // is indeterminate except while changes are being written.
+    function showProgress(progress) {
+      var text = working ? 'Working. This can take a few minutes.' : 'Working...';
+      workingBarEl.removeAttribute('value');
+      if (progress && progress.phase === 'read') {
+        text = 'Reading calendar ' + progress.done + ' of ' + progress.total;
+      } else if (progress && progress.phase === 'mirror') {
+        text = 'Reading your mirror';
+      } else if (progress && progress.phase === 'write') {
+        text = 'Saving changes: ' + progress.done + ' of ' + progress.total;
+        workingBarEl.max = progress.total;
+        workingBarEl.value = progress.done;
+      }
+      workingTextEl.textContent = text;
+    }
+
+    function openModal() {
+      showProgress(null);
+      clearTimeout(modalTimer);
+      modalTimer = setTimeout(function () {
+        if (busy && !workingEl.open) workingEl.showModal();
+      }, MODAL_DELAY_MS);
+    }
+
+    function closeModal() {
+      clearTimeout(modalTimer);
+      if (workingEl.open) workingEl.close();
+    }
+
+    // Runs until the call it belongs to returns. A failed poll is ignored, because
+    // the call itself reports any error.
+    function pollProgress(token) {
+      setTimeout(function () {
+        if (progressToken !== token) return;
+        google.script.run
+          .withSuccessHandler(function (progress) {
+            if (progressToken !== token) return;
+            if (progress) showProgress(progress);
+            pollProgress(token);
+          })
+          .withFailureHandler(function () {
+            pollProgress(token);
+          })
+          .getSyncProgress(token);
+      }, PROGRESS_POLL_MS);
+    }
+
+    function stopProgress() {
+      working = false;
+      progressToken = null;
+      showProgress(null);
+    }
+
+    // Starting only disables the page. Rebuilding it then made it jump. The page is
+    // disabled at once, so it's blocked before the modal appears.
     function setBusy(value) {
       keepPlace(function () {
         busy = value;
         contentEl.disabled = value;
         if (value) errorEl.hidden = true;
-        progressEl.hidden = !working;
         if (data && !value) render();
       });
+      if (value) {
+        openModal();
+      } else {
+        closeModal();
+      }
     }
 
     // Failures show the banner and leave everything as it was.
@@ -837,7 +931,7 @@
       var runner = google.script.run
         .withSuccessHandler(onSuccess)
         .withFailureHandler(function (error) {
-          working = false;
+          stopProgress();
           showError(error);
           if (!data) {
             errorEl.textContent += ' If you\'re signed in to more than one Google account, try an incognito window or sign out of the others.';
@@ -867,13 +961,16 @@
       });
     }
 
-    // The same, for calls that can take minutes.
+    // The same, for calls that can take minutes, which report their progress.
     // The preview stays until the call succeeds, so the page doesn't shrink.
     function runLong(name, onDone) {
+      var token = Date.now().toString(36) + Math.random().toString(36).slice(2);
       working = true;
+      progressToken = token;
       setBusy(true);
-      callServer(name, [], function (result) {
-        working = false;
+      pollProgress(token);
+      callServer(name, [token], function (result) {
+        stopProgress();
         previewResult = null;
         if (onDone) onDone(result);
         refresh();
