@@ -117,6 +117,23 @@
     /* A 2px gap between slices, in the page's own colour. */
     .pie path, .pie circle { stroke: var(--bg); stroke-width: 2; stroke-linejoin: round; }
     .pie path:hover, .pie circle:hover { opacity: 0.8; }
+    /* After setup, one section at a time (issue #16). In the sticky banners, so it
+       stays reachable from deep in Upcoming. */
+    #tabs { display: flex; flex-wrap: wrap; padding-top: 12px; border-bottom: 1px solid var(--line); }
+    #tabs button {
+      margin-bottom: -1px;
+      padding: 6px 12px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: none;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    #tabs button[aria-selected="true"] { border-bottom-color: var(--text); color: var(--text); font-weight: 600; }
+    #tabs .attention { color: var(--error-text); }
+    #main { padding-top: 8px; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .disclosure { margin-top: 32px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
     [hidden] { display: none !important; }
   </style>
@@ -128,6 +145,7 @@
   </header>
 
   <div id="banners">
+    <div id="tabs" role="tablist" aria-label="Sections" hidden></div>
     <div id="error" class="notice error" role="alert" hidden></div>
   </div>
 
@@ -140,7 +158,7 @@
     <div id="warnings"></div>
     <div id="loading" class="muted">Loading...</div>
     <div id="setup" hidden></div>
-    <div id="main" hidden></div>
+    <div id="main" role="tabpanel" hidden></div>
   </fieldset>
 
   <p class="disclosure">vCal runs on its owner's Apps Script project. The owner can see when your syncs ran, and controls the code that can read and change your calendars. Google's error messages, which the owner can see, may include calendar IDs.</p>
@@ -176,6 +194,11 @@
     var frequencyWarningEl = null;
     var searchQuery = '';
     var timePeriod = 'thisWeek';
+    // Not saved, so each page load opens on Status.
+    var currentTab = 'status';
+    var TABS = [
+      ['status', 'Status'], ['calendars', 'Calendars'], ['rules', 'Rules'], ['time', 'Time'], ['upcoming', 'Upcoming'],
+    ];
 
     // Kept here and not reloaded. Cleared by anything that could make it out of date.
     var previewResult = null;
@@ -195,6 +218,7 @@
     var workingEl = document.getElementById('working');
     var workingTextEl = document.getElementById('working-text');
     var workingBarEl = document.getElementById('working-bar');
+    var tabsEl = document.getElementById('tabs');
     var warningsEl = document.getElementById('warnings');
     var loadingEl = document.getElementById('loading');
     var setupEl = document.getElementById('setup');
@@ -713,7 +737,6 @@
     function renderStatus(parent) {
       var settings = data.settings;
       var status = data.status;
-      parent.appendChild(el('h2', '', 'Status'));
       if (data.stale) {
         parent.appendChild(el('div', 'notice warning', 'vCal hasn\'t recorded a sync when one was expected. Try Pause, then Turn on sync. If that doesn\'t help, the app may be unavailable, so ask its owner to check it.'));
       }
@@ -758,7 +781,6 @@
     }
 
     function renderCalendars(parent) {
-      parent.appendChild(el('h2', '', 'Calendars'));
       parent.appendChild(el('h3', '', 'Mirror'));
       if (!hasMirror()) {
         parent.appendChild(el('div', 'notice warning', 'Your mirror calendar is missing, so vCal can\'t sync. If you deleted it, create a new one. vCal owns that calendar, so anything you add to it by hand gets deleted.'));
@@ -782,7 +804,6 @@
     }
 
     function renderRules(parent) {
-      parent.appendChild(el('h2', '', 'Rules'));
       renderRuleList(parent);
       appendRuleForm(parent);
     }
@@ -835,7 +856,6 @@
     }
 
     function renderUpcoming(parent) {
-      parent.appendChild(el('h2', '', 'Upcoming'));
       var search = textInput(searchQuery, function (value) {
         searchQuery = value;
         renderEvents();
@@ -953,7 +973,6 @@
     }
 
     function renderTime(parent) {
-      parent.appendChild(el('h2', '', 'Time'));
       parent.appendChild(el('p', 'muted', 'How the period splits between your source calendars and unscheduled time. Only events vCal mirrors count, leaving out all-day and declined events. Time in more than one calendar at once has its own slice.'));
       var fields = el('div', 'fields');
       // The result names its own dates, so it can stay until Show is clicked.
@@ -987,12 +1006,63 @@
       parent.appendChild(chart);
     }
 
+    // --- Tabs --------------------------------------------------------------------
+
+    // Only the open tab is rendered.
     function renderMain() {
-      renderStatus(mainEl);
-      renderCalendars(mainEl);
-      renderRules(mainEl);
-      renderTime(mainEl);
-      renderUpcoming(mainEl);
+      var renderers = {
+        status: renderStatus, calendars: renderCalendars, rules: renderRules,
+        time: renderTime, upcoming: renderUpcoming,
+      };
+      mainEl.setAttribute('aria-labelledby', 'tab-' + currentTab);
+      renderers[currentTab](mainEl);
+    }
+
+    // A warning inside one section would go unseen from another tab.
+    function tabNeedsAttention(key) {
+      if (key === 'status') return Boolean(data.stale || (data.status && data.status.error));
+      if (key === 'calendars') return !hasMirror();
+      return false;
+    }
+
+    function openTab(key, focus) {
+      currentTab = key;
+      render();
+      window.scrollTo(0, 0);
+      if (focus) document.getElementById('tab-' + key).focus();
+    }
+
+    // The ARIA tabs pattern: one tab in the Tab order, arrows move between them.
+    function renderTabs(show) {
+      clear(tabsEl);
+      tabsEl.hidden = !show;
+      if (!show) return;
+      TABS.forEach(function (tab, index) {
+        var key = tab[0];
+        var node = button(tab[1], function () {
+          openTab(key, false);
+        });
+        node.id = 'tab-' + key;
+        node.setAttribute('role', 'tab');
+        node.setAttribute('aria-controls', 'main');
+        node.setAttribute('aria-selected', String(key === currentTab));
+        node.tabIndex = key === currentTab ? 0 : -1;
+        if (tabNeedsAttention(key)) {
+          var marker = el('span', 'attention', ' •');
+          marker.setAttribute('aria-hidden', 'true');
+          node.appendChild(marker);
+          node.appendChild(el('span', 'visually-hidden', ' (needs attention)'));
+        }
+        node.addEventListener('keydown', function (event) {
+          var next = {
+            ArrowLeft: index - 1, ArrowRight: index + 1, Home: 0, End: TABS.length - 1,
+          }[event.key];
+          if (next === undefined) return;
+          event.preventDefault();
+          openTab(TABS[(next + TABS.length) % TABS.length][0], true);
+        });
+        tabsEl.appendChild(node);
+      });
     }
 
     // --- Page --------------------------------------------------------------------
@@ -1015,6 +1085,7 @@
       var inSetup = !data.settings.enabled && !data.status;
       loadingEl.hidden = true;
       renderWarnings();
+      renderTabs(!inSetup);
       clear(setupEl);
       clear(mainEl);
       setupEl.hidden = !inSetup;
