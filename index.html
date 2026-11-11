@@ -103,6 +103,20 @@
     .timepick select { display: inline-block; }
     .picker-name { flex: 1 1 160px; min-width: 0; }
     .form { margin-top: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; }
+    .swatch { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); }
+    .row .hours { width: 72px; text-align: right; font-variant-numeric: tabular-nums; }
+    .row .share { width: 64px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .time-chart { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; }
+    .time-legend { flex: 1 1 280px; min-width: 0; }
+    .time-legend .row { flex-wrap: nowrap; }
+    .time-legend .main { flex: 1 1 auto; }
+    .time-legend .swatch { flex: 0 0 auto; }
+    .pie { flex: 0 0 auto; }
+    .row.total { margin-top: 4px; border-top: 1px solid var(--line); }
+    .fields label.fit { flex: 0 0 auto; }
+    /* A 2px gap between slices, in the page's own colour. */
+    .pie path, .pie circle { stroke: var(--bg); stroke-width: 2; stroke-linejoin: round; }
+    .pie path:hover, .pie circle:hover { opacity: 0.8; }
     .disclosure { margin-top: 32px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
     [hidden] { display: none !important; }
   </style>
@@ -161,9 +175,21 @@
     var frequencyDraft = null;
     var frequencyWarningEl = null;
     var searchQuery = '';
+    var timePeriod = 'thisWeek';
 
     // Kept here and not reloaded. Cleared by anything that could make it out of date.
     var previewResult = null;
+    var timeResult = null;
+
+    var TIME_PERIODS = [
+      ['thisWeek', 'This week'], ['lastWeek', 'Last week'],
+      ['thisMonth', 'This month'], ['lastMonth', 'Last month'],
+    ];
+    // Google Calendar's event colours, by colour id.
+    var EVENT_COLOR_HEX = {
+      '1': '#7986cb', '2': '#33b679', '3': '#8e24aa', '4': '#e67c73', '5': '#f6bf26', '6': '#f4511e',
+      '7': '#039be5', '8': '#616161', '9': '#3f51b5', '10': '#0b8043', '11': '#d50000',
+    };
 
     var errorEl = document.getElementById('error');
     var workingEl = document.getElementById('working');
@@ -822,10 +848,150 @@
       renderEvents();
     }
 
+    // --- Time -------------------------------------------------------------------
+
+    function formatHours(minutes) {
+      var hours = Math.floor(minutes / 60);
+      var rest = minutes % 60;
+      return hours + 'h' + (rest ? ' ' + rest + 'm' : '');
+    }
+
+    function formatShare(minutes, total) {
+      if (total <= 0 || minutes <= 0) return '0%';
+      var share = Math.round(minutes / total * 100);
+      return share === 0 ? 'under 1%' : share + '%';
+    }
+
+    // The pie's parts, which add up to the whole period. A source without a
+    // colour takes the next event colour no source uses, in a fixed order, so
+    // each keeps its own. The order's first six pass a colour-blindness check as
+    // neighbours. Graphite is left out, being close to the overlap grey.
+    var SPARE_COLOR_ORDER = ['7', '6', '3', '10', '4', '9', '2', '11', '1', '5'];
+
+    function timeSlices(result) {
+      var used = {};
+      result.rows.forEach(function (row) {
+        if (EVENT_COLOR_HEX[row.color]) used[row.color] = true;
+      });
+      var spare = SPARE_COLOR_ORDER.filter(function (id) {
+        return !used[id];
+      });
+      var slices = result.rows.map(function (row) {
+        var fill = EVENT_COLOR_HEX[row.color] || EVENT_COLOR_HEX[spare.shift()] || 'var(--muted)';
+        return { name: row.name, minutes: row.minutes, fill: fill };
+      });
+      if (result.overlapMinutes > 0) {
+        slices.push({ name: 'In more than one calendar', minutes: result.overlapMinutes, fill: 'var(--muted)' });
+      }
+      slices.push({ name: 'Unscheduled', minutes: result.freeMinutes, fill: 'var(--line)' });
+      return slices;
+    }
+
+    function svgEl(tag, attributes) {
+      var node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      Object.keys(attributes).forEach(function (name) {
+        node.setAttribute(name, attributes[name]);
+      });
+      return node;
+    }
+
+    // Slices run clockwise from the top. Hovering one shows its figures, and the
+    // list beside the chart holds the same figures for anyone who can't see it.
+    function pieChart(slices, total) {
+      var c = 90;
+      var r = 88;
+      var svg = svgEl('svg', { viewBox: '0 0 180 180', width: 180, height: 180, role: 'img', 'class': 'pie' });
+      svg.setAttribute('aria-label', 'Pie chart of the period. The list beside it has the same figures.');
+      var turned = 0;
+      slices.forEach(function (slice) {
+        if (slice.minutes <= 0 || total <= 0) return;
+        var share = Math.min(slice.minutes / total, 1);
+        var mark;
+        if (share > 0.9999) {
+          mark = svgEl('circle', { cx: c, cy: c, r: r });
+        } else {
+          var from = turned * 2 * Math.PI;
+          var to = (turned + share) * 2 * Math.PI;
+          mark = svgEl('path', {
+            d: 'M' + c + ' ' + c +
+              ' L' + (c + r * Math.sin(from)) + ' ' + (c - r * Math.cos(from)) +
+              ' A' + r + ' ' + r + ' 0 ' + (share > 0.5 ? 1 : 0) + ' 1 ' +
+              (c + r * Math.sin(to)) + ' ' + (c - r * Math.cos(to)) + ' Z',
+          });
+        }
+        turned += share;
+        mark.style.fill = slice.fill;
+        var title = svgEl('title', {});
+        title.textContent = slice.name + ': ' + formatHours(slice.minutes) + ' (' + formatShare(slice.minutes, total) + ')';
+        mark.appendChild(title);
+        svg.appendChild(mark);
+      });
+      return svg;
+    }
+
+    function timeLegendRow(name, fill, minutes, total) {
+      var row = el('div', 'row');
+      var swatch = el('span', 'swatch');
+      if (fill) {
+        swatch.style.background = fill;
+      } else {
+        swatch.style.visibility = 'hidden';
+      }
+      row.appendChild(swatch);
+      row.appendChild(el('span', 'main', name));
+      row.appendChild(el('span', 'hours', formatHours(minutes)));
+      row.appendChild(el('span', 'share', formatShare(minutes, total)));
+      return row;
+    }
+
+    function showTime() {
+      setBusy(true);
+      callServer('getTimeInsights', [timePeriod], function (result) {
+        timeResult = result;
+        setBusy(false);
+      });
+    }
+
+    function renderTime(parent) {
+      parent.appendChild(el('h2', '', 'Time'));
+      parent.appendChild(el('p', 'muted', 'How the period splits between your source calendars and unscheduled time. Only events vCal mirrors count, leaving out all-day and declined events. Time in more than one calendar at once has its own slice.'));
+      var fields = el('div', 'fields');
+      // The result names its own dates, so it can stay until Show is clicked.
+      fields.appendChild(labelled('Period', dropdown(TIME_PERIODS, timePeriod, function (value) {
+        timePeriod = value;
+      }), 'fit'));
+      fields.appendChild(button('Show', showTime));
+      parent.appendChild(fields);
+      if (!timeResult) return;
+
+      timeResult.warnings.forEach(function (warning) {
+        parent.appendChild(el('div', 'notice warning', warning));
+      });
+      parent.appendChild(el('h3', '', formatDay(timeResult.firstDay) + ' to ' + formatDay(timeResult.lastDay)));
+      if (timeResult.rows.length === 0) {
+        parent.appendChild(el('p', 'muted', 'Pick a source calendar first.'));
+        return;
+      }
+      var total = timeResult.periodMinutes;
+      var slices = timeSlices(timeResult);
+      var chart = el('div', 'time-chart');
+      chart.appendChild(pieChart(slices, total));
+      var legend = el('div', 'time-legend');
+      slices.forEach(function (slice) {
+        legend.appendChild(timeLegendRow(slice.name, slice.fill, slice.minutes, total));
+      });
+      var scheduled = timeLegendRow('Scheduled in all', '', total - timeResult.freeMinutes, total);
+      scheduled.className = 'row total';
+      legend.appendChild(scheduled);
+      chart.appendChild(legend);
+      parent.appendChild(chart);
+    }
+
     function renderMain() {
       renderStatus(mainEl);
       renderCalendars(mainEl);
       renderRules(mainEl);
+      renderTime(mainEl);
       renderUpcoming(mainEl);
     }
 
@@ -971,6 +1137,7 @@
       setBusy(true);
       callServer(name, args, function (result) {
         previewResult = null;
+        timeResult = null;
         if (onDone) onDone(result);
         refresh();
       });
@@ -987,6 +1154,7 @@
       callServer(name, [token], function (result) {
         stopProgress();
         previewResult = null;
+        timeResult = null;
         if (onDone) onDone(result);
         refresh();
       });

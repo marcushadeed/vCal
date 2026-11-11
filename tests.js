@@ -155,7 +155,10 @@ function runTests() {
     .concat(testDescribeRemovedRules())
     .concat(testComparePageEvents())
     .concat(testProgressReporter())
-    .concat(testIsValidProgressToken());
+    .concat(testIsValidProgressToken())
+    .concat(testPeriodRange())
+    .concat(testCountsTowardTime())
+    .concat(testSummarizeTime());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -1077,5 +1080,107 @@ function testIsValidProgressToken() {
     blockResult('progress token: too long', false, isValidProgressToken(new Array(42).join('a'))),
     blockResult('progress token: punctuation', false, isValidProgressToken('progress:abc')),
     blockResult('progress token: not a string', false, isValidProgressToken(123)),
+  ];
+}
+
+// Period bounds are local midnight in the user's time zone, whatever the
+// script's. NY_* checks cover both daylight saving changes.
+function testPeriodRange() {
+  var NY = 'America/New_York';
+  var iso = function (ms) { return new Date(ms).toISOString(); };
+  var sunday = periodRange('thisWeek', '2026-11-10', 0, NY);
+  var monday = periodRange('thisWeek', '2026-11-10', 1, NY);
+  var saturday = periodRange('thisWeek', '2026-11-10', 6, NY);
+  var onWeekStart = periodRange('thisWeek', '2026-11-08', 0, NY);
+  var lastWeek = periodRange('lastWeek', '2026-11-10', 0, NY);
+  var thisMonth = periodRange('thisMonth', '2026-11-10', 0, NY);
+  var lastMonth = periodRange('lastMonth', '2026-01-15', 0, NY);
+  var tokyo = periodRange('thisWeek', '2026-11-10', 0, 'Asia/Tokyo');
+  return [
+    blockResult('period: week from Sunday', '2026-11-08', sunday.startDate),
+    blockResult('period: week ends after seven days', '2026-11-15', sunday.endDate),
+    blockResult('period: week from Monday', '2026-11-09', monday.startDate),
+    blockResult('period: week from Saturday', '2026-11-07', saturday.startDate),
+    blockResult('period: the week start day starts its own week', '2026-11-08', onWeekStart.startDate),
+    blockResult('period: last week', '2026-11-01', lastWeek.startDate),
+    blockResult('period: New York midnight in standard time', '2026-11-08T05:00:00.000Z', iso(sunday.startMs)),
+    blockResult('period: New York midnight in daylight time', '2026-11-01T04:00:00.000Z', iso(lastWeek.startMs)),
+    blockResult('period: the week daylight saving ends is an hour longer',
+      7 * 24 * 3600000 + 3600000, lastWeek.endMs - lastWeek.startMs),
+    blockResult('period: this month', '2026-11-01 to 2026-12-01', thisMonth.startDate + ' to ' + thisMonth.endDate),
+    blockResult('period: last month crosses the year', '2025-12-01 to 2026-01-01', lastMonth.startDate + ' to ' + lastMonth.endDate),
+    blockResult('period: Tokyo midnight', '2026-11-07T15:00:00.000Z', iso(tokyo.startMs)),
+    blockResult('period: midnight on the day daylight saving starts', '2026-03-08T05:00:00.000Z', iso(localMidnightMs('2026-03-08', NY))),
+    blockResult('period: midnight the day after it starts', '2026-03-09T04:00:00.000Z', iso(localMidnightMs('2026-03-09', NY))),
+    throwsResult('period: an unknown period is refused', function () {
+      periodRange('forever', '2026-11-10', 0, NY);
+    }),
+  ];
+}
+
+function testCountsTowardTime() {
+  var NY = 'America/New_York';
+  var timed = function (fields) {
+    var item = { summary: 'Lecture', start: { dateTime: '2026-11-10T14:00:00Z' }, end: { dateTime: '2026-11-10T15:15:00Z' } };
+    Object.keys(fields || {}).forEach(function (key) { item[key] = fields[key]; });
+    return item;
+  };
+  var counted = function (item) {
+    return withRules([{ type: 'exact', value: 'Office Hours' }], function () {
+      return timedInterval(item, NY) !== null;
+    });
+  };
+  var interval = withRules([], function () { return timedInterval(timed(), NY); });
+  return [
+    blockResult('time: a timed event counts', true, counted(timed())),
+    blockResult('time: its length', 75, (interval.endMs - interval.startMs) / 60000),
+    blockResult('time: an event excluded by a rule does not count', false, counted(timed({ summary: 'Office Hours' }))),
+    blockResult('time: an all-day event does not count', false,
+      counted(timed({ start: { date: '2026-11-10' }, end: { date: '2026-11-11' } }))),
+    blockResult('time: a declined event does not count', false,
+      counted(timed({ attendees: [{ email: 'a', responseStatus: 'accepted' }, { email: 'b', self: true, responseStatus: 'declined' }] }))),
+    blockResult('time: someone else declining does not matter', true,
+      counted(timed({ attendees: [{ email: 'a', responseStatus: 'declined' }, { email: 'b', self: true, responseStatus: 'accepted' }] }))),
+    blockResult('time: an event that ends as it starts does not count', false,
+      counted(timed({ end: { dateTime: '2026-11-10T14:00:00Z' } }))),
+  ];
+}
+
+// The parts must add up to the whole period, for the page's pie chart.
+function testSummarizeTime() {
+  var at = function (hour, minute) { return Date.UTC(2026, 10, 10, hour, minute || 0); };
+  var span = function (from, to) { return { startMs: from, endMs: to }; };
+  var summarize = function (sources) {
+    return summarizeTime(sources.map(function (intervals, index) {
+      return { name: 'S' + index, color: '', intervals: intervals };
+    }), at(0), at(24));
+  };
+  var describe = function (summary) {
+    return summary.rows.map(function (row) { return row.name + ' ' + row.minutes; })
+      .concat(['overlap ' + summary.overlapMinutes, 'free ' + summary.freeMinutes]).join(', ');
+  };
+  var shared = summarize([[span(at(9), at(11))], [span(at(10), at(12))], []]);
+  var named = summarizeTime([{ name: 'Classes', color: '9', intervals: [] }], at(0), at(24));
+  return [
+    blockResult('time: one event', 'S0 60, overlap 0, free 1380', describe(summarize([[span(at(9), at(10))]]))),
+    blockResult('time: overlap within a source counts once', 'S0 90, overlap 0, free 1350',
+      describe(summarize([[span(at(9), at(10)), span(at(9, 30), at(10, 30))]]))),
+    blockResult('time: a nested event adds nothing', 'S0 120, overlap 0, free 1320',
+      describe(summarize([[span(at(9), at(11)), span(at(9, 30), at(10))]]))),
+    blockResult('time: touching events', 'S0 120, overlap 0, free 1320',
+      describe(summarize([[span(at(10), at(11)), span(at(9), at(10))]]))),
+    blockResult('time: time shared by sources is its own part', 'S0 60, S1 60, S2 0, overlap 60, free 1260',
+      describe(shared)),
+    blockResult('time: one source inside another', 'S0 120, S1 0, overlap 60, free 1260',
+      describe(summarize([[span(at(9), at(12))], [span(at(10), at(11))]]))),
+    blockResult('time: clipped at both ends of the period', 'S0 30, S1 60, overlap 0, free 1350',
+      describe(summarize([[span(at(-1), at(0, 30))], [span(at(23), at(26))]]))),
+    blockResult('time: an event outside the period', 'S0 0, overlap 0, free 1440',
+      describe(summarize([[span(at(25), at(26))]]))),
+    blockResult('time: no sources', 'overlap 0, free 1440', describe(summarize([]))),
+    blockResult('time: the parts add up to the period', 1440,
+      shared.rows.reduce(function (sum, row) { return sum + row.minutes; }, shared.overlapMinutes + shared.freeMinutes)),
+    blockResult('time: period length', 1440, shared.periodMinutes),
+    blockResult('time: keeps the name and colour', 'Classes 9', named.rows[0].name + ' ' + named.rows[0].color),
   ];
 }

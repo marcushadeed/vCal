@@ -123,6 +123,16 @@ When an event title has multiple instances per week, use time-based filters to e
 11. **Rules outlive their date range by 30 days** (`RULE_EXPIRY_GRACE_DAYS`), then are deleted on page load, using the user's time zone. Rules match on start date, but the sync reads events still running, so removing a rule once its date passes would bring back a multi-day event it excluded.
 12. **The page always receives the stored form**, because a `RegExp` can't pass through `google.script.run`.
 
+### Time Insights
+The page's **Time** section is a pie chart of this or last week or month: each source calendar, time in more than one calendar, and unscheduled time (issue #4). Google's own Time Insights can't do this. It reads only the primary calendar, and counts only accepted meetings with other guests, while the mirror is a secondary calendar whose events never have guests.
+
+- `getTimeInsights()` in `insights.js` reads each source for the period and **writes nothing**. Like the page's event list, it turns an unreadable calendar into a warning.
+- It counts only events the mirror would hold (`matchesRules()`), and skips all-day and declined events.
+- `summarizeTime()` splits the period into parts that add up to the whole, as a pie needs. Time in exactly one source goes to that source, time in two or more is its own part, and the rest is unscheduled. Overlaps within one source count once.
+- Slices use each source's event colour. A source without one takes an unused colour from `SPARE_COLOR_ORDER` in `index.html`, whose first six pass the dataviz validator as neighbours in light mode.
+- Weeks start on the user's Calendar `weekStart` setting. Periods begin at local midnight in the user's time zone (`localMidnightMs()`).
+- Its result holds calendar names, so it goes only to the page.
+
 ### Calendars
 **Create mirror calendar** is the only way to set a mirror on the page, because the sync deletes everything in the mirror without a sync key. Users can't point it at an existing calendar. Users name it when creating it (`validateMirrorName()`, default `vCal mirror`), and **Rename** patches the calendar's own `summary`, not the per-user `summaryOverride`, so people it's shared with see the new name. `loadSettings()` refuses a mirror that is the primary calendar or is also a source. Sources come from a picker backed by `Calendar.CalendarList.list`, which leaves out the mirror but keeps any stored source that is no longer listed, so it can be removed.
 
@@ -146,6 +156,7 @@ When an event title has multiple instances per week, use time-based filters to e
 - `isMassDelete()`, `shouldStopForDeletes()` and `describeMassDelete()` — the mass delete limits, and that the message holds counts only.
 - `addMirrorItem()` and `buildPlan()` — that a duplicate is deleted and its first copy kept.
 - `parseEventStart()`, `isBlockExpired()`, `describeRemovedRules()` and `comparePageEvents()` — the rest of the store's and page's pure logic.
+- `periodRange()`, `localMidnightMs()`, `timedInterval()`, `countsTowardTime()` and `summarizeTime()` — time insights' periods across daylight saving and week starts, what counts, and that the pie's parts add up to the whole period.
 
 Anything added to `computeSignature()` needs a corresponding case in `testComputeSignature()`; a field that is hashed but untested will silently stop triggering updates if it is ever dropped.
 
