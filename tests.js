@@ -743,7 +743,7 @@ function testDescribeRule() {
     blockResult('describe: contains', 'Titles containing "exam"', describeRule({ type: 'contains', value: 'exam' })),
     blockResult('describe: stored regex', 'Titles matching /^Lab/i', describeRule({ type: 'regex', value: '^Lab', flags: 'i' })),
     blockResult('describe: compiled regex', 'Titles matching /^Lab/i', describeRule(compileRule({ type: 'regex', value: '^Lab', flags: 'i' }))),
-    blockResult('describe: limits', 'All events titled "Standup", on MO, WE, from 9:00 AM to 10:00 AM', describeRule(withLimits)),
+    blockResult('describe: limits', 'All events titled "Standup", on MO, WE, starting between 9:00 AM and 10:00 AM', describeRule(withLimits)),
     blockResult('describe: any title with a range', 'All events, 2026-12-21 to 2027-01-01', describeRule(range)),
   ];
 }
