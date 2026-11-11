@@ -73,6 +73,8 @@
     .muted { color: var(--muted); }
     .notice { margin: 12px 0 0; padding: 8px 12px; border-radius: 4px; overflow-wrap: anywhere; }
     .error { background: var(--error-bg); color: var(--error-text); }
+    /* Actions happen far down the page, so the banner follows the scroll. */
+    #error { position: sticky; top: 0; z-index: 1; }
     .warning { background: var(--warn-bg); color: var(--warn-text); }
     .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 0; }
     .row .main { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
