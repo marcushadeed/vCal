@@ -43,6 +43,12 @@ Rules match on title and start time, so:
 
 Changes apply at the next sync. A rule with a date range is removed 30 days after the range ends.
 
+## Time
+
+**Time** is a pie chart of this week, last week, this month or last month, split between your source calendars and unscheduled time. It counts only the events vCal mirrors, and leaves out all-day and declined events. Time in more than one calendar at once gets its own slice, so the slices add up to the whole period. Weeks start on the day set in your Google Calendar settings.
+
+Google Calendar's own Time Insights can't show this, because it reads only your primary calendar.
+
 ## The mirror belongs to vCal
 
 **Anything you add to the mirror calendar by hand gets deleted at the next sync.** Keep your own events somewhere else.
