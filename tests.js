@@ -140,6 +140,7 @@ function runTests() {
     .concat(testNormalizeAndCompileRule())
     .concat(testParseStoredRule())
     .concat(testDescribeRule())
+    .concat(testFormatTime12())
     .concat(testAssertSafeMirror())
     .concat(testAssertReadyToSync())
     .concat(testIsRunStale())
@@ -602,9 +603,9 @@ function testDescribeOccurrenceRule() {
   return [
     blockResult('describe: title block', 'All events titled "Lecture"',
       describeRule(buildBlockRule('title', 'Lecture', start))),
-    blockResult('describe: occurrence block', '"Lecture" on 2026-11-04 at 10:00',
+    blockResult('describe: occurrence block', '"Lecture" on 2026-11-04 at 10:00 AM',
       describeRule(buildBlockRule('occurrence', 'Lecture', start))),
-    blockResult('describe: untitled occurrence block', '(untitled) on 2026-11-04 at 10:00',
+    blockResult('describe: untitled occurrence block', '(untitled) on 2026-11-04 at 10:00 AM',
       describeRule(buildBlockRule('occurrence', '', start))),
   ];
 }
@@ -641,7 +642,7 @@ function testLocalStartParts() {
     blockResult('parts: all-day day code', 'FR', allDayLa.day),
     blockResult('parts: all-day minutes', 0, allDayLa.minutes),
     blockResult('parts: all-day flag', true, allDayLa.allDay),
-    blockResult('parts: describes a timed start', '2026-11-04 10:30', describeStart(ny)),
+    blockResult('parts: describes a timed start', '2026-11-04 10:30 AM', describeStart(ny)),
     blockResult('parts: describes an all-day start', '2026-12-25', describeStart(allDayLa)),
     blockResult('parts: a block near midnight matches its own event', true, run('2026-11-04T15:05:00Z')),
     blockResult('parts: and not one a minute later', false, run('2026-11-04T15:06:00Z')),
@@ -740,9 +741,20 @@ function testDescribeRule() {
     blockResult('describe: contains', 'Titles containing "exam"', describeRule({ type: 'contains', value: 'exam' })),
     blockResult('describe: stored regex', 'Titles matching /^Lab/i', describeRule({ type: 'regex', value: '^Lab', flags: 'i' })),
     blockResult('describe: compiled regex', 'Titles matching /^Lab/i', describeRule(compileRule({ type: 'regex', value: '^Lab', flags: 'i' }))),
-    blockResult('describe: limits', 'All events titled "Standup", on MO, WE, from 09:00 to 10:00', describeRule(withLimits)),
+    blockResult('describe: limits', 'All events titled "Standup", on MO, WE, from 9:00 AM to 10:00 AM', describeRule(withLimits)),
     blockResult('describe: any title with a range', 'All events, 2026-12-21 to 2027-01-01', describeRule(range)),
   ];
+}
+
+// Midnight is 12:00 AM at both ends of the day, since 24:00 is only ever an end.
+function testFormatTime12() {
+  var cases = [
+    [0, '12:00 AM'], [5, '12:05 AM'], [9 * 60, '9:00 AM'], [12 * 60, '12:00 PM'],
+    [13 * 60 + 30, '1:30 PM'], [23 * 60 + 59, '11:59 PM'], [24 * 60, '12:00 AM'],
+  ];
+  return cases.map(function (c) {
+    return blockResult('time: ' + c[0] + ' minutes is ' + c[1], c[1], formatTime12(c[0]));
+  });
 }
 
 // --- Settings and sync lifecycle ----------------------------------------------
@@ -1008,15 +1020,16 @@ function testDescribeRemovedRules() {
 // script's time zone and a heading is printed each time the day changes.
 function testComparePageEvents() {
   var events = [
-    { title: 'evening', day: '2026-11-06', time: '18:00' },
-    { title: 'next day all-day', day: '2026-11-07', time: '' },
-    { title: 'all-day', day: '2026-11-06', time: '' },
-    { title: 'late the day before', day: '2026-11-05', time: '23:00' },
-    { title: 'morning', day: '2026-11-06', time: '09:00' },
+    { title: 'evening', day: '2026-11-06', minutes: 18 * 60 },
+    { title: 'next day all-day', day: '2026-11-07', minutes: -1 },
+    { title: 'all-day', day: '2026-11-06', minutes: -1 },
+    { title: 'late the day before', day: '2026-11-05', minutes: 23 * 60 },
+    { title: 'late morning', day: '2026-11-06', minutes: 10 * 60 },
+    { title: 'morning', day: '2026-11-06', minutes: 9 * 60 },
   ];
   var sorted = events.slice().sort(comparePageEvents).map(function (event) { return event.title; }).join(', ');
   return [
     blockResult('page events: by day, then all-day first, then time',
-      'late the day before, all-day, morning, evening, next day all-day', sorted),
+      'late the day before, all-day, morning, late morning, evening, next day all-day', sorted),
   ];
 }

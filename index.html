@@ -76,13 +76,15 @@
     .warning { background: var(--warn-bg); color: var(--warn-text); }
     .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 0; }
     .row .main { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
-    .row .time { width: 52px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .row .time { width: 64px; color: var(--muted); font-variant-numeric: tabular-nums; }
     .row .actions { display: flex; flex-wrap: wrap; gap: 4px; }
     .blocked .main { color: var(--muted); }
     .fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; padding: 4px 0; }
     .fields label { flex: 1 1 120px; min-width: 0; }
     .fields label.check { flex: 0 0 auto; }
     .fields label.wide { flex: 1 1 100%; }
+    .timepick { display: flex; gap: 4px; }
+    .timepick select { display: inline-block; }
     .picker-name { flex: 1 1 160px; min-width: 0; }
     .form { margin-top: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; }
     .disclosure { margin-top: 32px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
@@ -166,6 +168,45 @@
     function showError(error) {
       errorEl.textContent = (error && error.message) || String(error);
       errorEl.hidden = false;
+    }
+
+    // A 12-hour picker for a stored 24-hour HH:MM value, or '' for none. 24:00 is
+    // midnight at the end of the day, so an end time of 12:00 AM means 24:00. An
+    // end of 00:00 or a start of 24:00 could never be valid anyway.
+    function timePicker(value, isEnd, onChange) {
+      var hour = '';
+      var minute = '00';
+      var period = 'AM';
+      if (/^\d{2}:\d{2}$/.test(value)) {
+        var hours24 = parseInt(value.substring(0, 2), 10) % 24;
+        hour = String(hours24 % 12 || 12);
+        minute = value.substring(3);
+        period = hours24 < 12 ? 'AM' : 'PM';
+      }
+      var hours = [['', '--']];
+      for (var h = 1; h <= 12; h++) hours.push([String(h), String(h)]);
+      var minutes = [];
+      for (var m = 0; m < 60; m++) {
+        var padded = (m < 10 ? '0' : '') + m;
+        minutes.push([padded, padded]);
+      }
+      function update() {
+        if (hour === '') return onChange('');
+        var hours24 = parseInt(hour, 10) % 12 + (period === 'PM' ? 12 : 0);
+        if (isEnd && hours24 === 0 && minute === '00') return onChange('24:00');
+        onChange((hours24 < 10 ? '0' : '') + hours24 + ':' + minute);
+      }
+      var node = el('span', 'timepick');
+      var parts = [
+        ['Hour', dropdown(hours, hour, function (v) { hour = v; update(); })],
+        ['Minute', dropdown(minutes, minute, function (v) { minute = v; update(); })],
+        ['AM or PM', dropdown([['AM', 'AM'], ['PM', 'PM']], period, function (v) { period = v; update(); })],
+      ];
+      parts.forEach(function (part) {
+        part[1].setAttribute('aria-label', part[0]);
+        node.appendChild(part[1]);
+      });
+      return node;
     }
 
     function labelled(text, control, className) {
@@ -431,10 +472,10 @@
       ruleFormEl.appendChild(dayFields);
 
       var limitFields = el('div', 'fields');
-      limitFields.appendChild(labelled('From time (HH:MM)', textInput(form.timeStart, function (value) {
+      limitFields.appendChild(labelled('From time', timePicker(form.timeStart, false, function (value) {
         form.timeStart = value;
       })));
-      limitFields.appendChild(labelled('To time (HH:MM)', textInput(form.timeEnd, function (value) {
+      limitFields.appendChild(labelled('To time', timePicker(form.timeEnd, true, function (value) {
         form.timeEnd = value;
       })));
       limitFields.appendChild(labelled('From date', textInput(form.dateStart, function (value) {
@@ -444,7 +485,7 @@
         form.dateEnd = value;
       }, 'date')));
       ruleFormEl.appendChild(limitFields);
-      ruleFormEl.appendChild(el('p', 'muted', 'Days, times and dates are optional, and use your calendar\'s time zone (' + data.timeZone + ').'));
+      ruleFormEl.appendChild(el('p', 'muted', 'Days, times and dates are optional, and use your calendar\'s time zone (' + data.timeZone + '). A To time of 12:00 AM means midnight at the end of the day.'));
 
       var actions = el('div', 'row');
       actions.appendChild(button(form.oldKey ? 'Save rule' : 'Add rule', function () {

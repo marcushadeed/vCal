@@ -101,7 +101,7 @@ When an event title has multiple instances per week, use time-based filters to e
    { type: 'exact', value: 'Team Standup', time: { start: '09:00', end: '10:00' } }
    { type: 'regex', value: 'Roadmap', flags: 'i', time: { start: '14:00', end: '15:30' } }
    ```
-2. **Time format** — 24-hour HH:MM format, from `00:00` to `24:00`. Times are evaluated against the event's start time in the user's calendar timezone.
+2. **Time format** — Stored as 24-hour HH:MM, from `00:00` to `24:00`. Times are evaluated against the event's start time in the user's calendar timezone. The page shows 12-hour times (`formatTime12()`) and picks them with hour, minute and AM/PM selects (issue #15). A To time of 12:00 AM is stored as `24:00`.
 3. **Logic** — An event matches a blacklist rule (and is excluded) when its title matches AND (if `days`/`time`/`date` are specified) its start day/time/date falls within those constraints. An event that matches no rule is mirrored by default.
 4. **Overlap handling** — If an event matches multiple exclusion rules, it is still excluded only once — exclusion is a boolean outcome, so no special de-duplication is needed.
 
@@ -131,7 +131,7 @@ When an event title has multiple instances per week, use time-based filters to e
 `runTests()` runs **without touching the Calendar API or User Properties**, so it's fast and safe to run from the Apps Script editor too. It covers these pure functions:
 
 - `matchesRules()` and `ruleMatches()` — blacklist filtering, including `contains` and day-, time- and date-constrained rules.
-- `localStartParts()` and `describeStart()` — time zones, daylight saving, all-day events, and a block made near midnight matching only its own event.
+- `localStartParts()`, `describeStart()` and `formatTime12()` — time zones, daylight saving, all-day events, and a block made near midnight matching only its own event.
 - `validateRule()`, `normalizeRule()`, `compileRule()`, `parseStoredRule()` and `describeRule()` — what's accepted and refused, that errors don't repeat the rule, and regex rules surviving JSON.
 - `resolveColorId()` — the event override / source-calendar colour precedence, and that out-of-range or non-string colour ids are ignored.
 - `buildEventResource()` — timed and all-day items, missing fields, that attendees are never copied and reminders are cleared, and that an offset timestamp hashes the same as its UTC form.

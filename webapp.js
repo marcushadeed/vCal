@@ -115,15 +115,13 @@ function readPageEvents(settings, warnings) {
 
 // By the day and time the page shows, with all-day events (no time) first. An
 // all-day event's instant follows the script's time zone, so sorting by instant
-// would split a day's events under two headings for users elsewhere. Pure.
+// would split a day's events under two headings for users elsewhere. `minutes`
+// is -1 for an all-day event. Pure.
 function comparePageEvents(a, b) {
   if (a.day !== b.day) {
     return a.day < b.day ? -1 : 1;
   }
-  if (a.time !== b.time) {
-    return a.time < b.time ? -1 : 1;
-  }
-  return 0;
+  return a.minutes - b.minutes;
 }
 
 function toPageEvent(item, sourceName) {
@@ -134,7 +132,8 @@ function toPageEvent(item, sourceName) {
     start: item.start.date || item.start.dateTime,
     allDay: parts.allDay,
     day: parts.date,
-    time: parts.allDay ? '' : formatMinutes(parts.minutes),
+    minutes: parts.allDay ? -1 : parts.minutes,
+    time: parts.allDay ? '' : formatTime12(parts.minutes),
     sourceName: sourceName,
     blocked: matchesRules(title, parts),
   };

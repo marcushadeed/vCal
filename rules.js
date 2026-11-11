@@ -125,7 +125,15 @@ function dayCodeOf(date) {
 
 // '2026-11-04 10:30', or '2026-11-04' when all-day.
 function describeStart(parts) {
-  return parts.allDay ? parts.date : parts.date + ' ' + formatMinutes(parts.minutes);
+  return parts.allDay ? parts.date : parts.date + ' ' + formatTime12(parts.minutes);
+}
+
+// For display only. Rules store 24-hour HH:MM. 24:00 is the end of the day, so it
+// reads as 12:00 AM like 00:00 does.
+function formatTime12(totalMinutes) {
+  var hours = Math.floor(totalMinutes / 60) % 24;
+  var minutes = String(totalMinutes % 60);
+  return (hours % 12 || 12) + ':' + (minutes.length < 2 ? '0' : '') + minutes + (hours < 12 ? ' AM' : ' PM');
 }
 
 // --- Validation ---------------------------------------------------------------
@@ -190,7 +198,7 @@ function validateRuleDays(days) {
 
 function validateRuleTime(time) {
   if (!time || !isValidTime(time.start) || !isValidTime(time.end)) {
-    throw new Error('Enter times as HH:MM, from 00:00 to 24:00.');
+    throw new Error('Choose both a From time and a To time.');
   }
   if (parseTimeToMinutes(time.start) >= parseTimeToMinutes(time.end)) {
     throw new Error('The start time must be before the end time.');
