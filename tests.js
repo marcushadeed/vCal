@@ -153,7 +153,9 @@ function runTests() {
     .concat(testMassDeleteGuard())
     .concat(testStoredRuleFixtures())
     .concat(testDescribeRemovedRules())
-    .concat(testComparePageEvents());
+    .concat(testComparePageEvents())
+    .concat(testProgressReporter())
+    .concat(testIsValidProgressToken());
   var failures = results.filter(function (r) { return !r.passed; });
 
   results.forEach(function (r) {
@@ -1031,5 +1033,47 @@ function testComparePageEvents() {
   return [
     blockResult('page events: by day, then all-day first, then time',
       'late the day before, all-day, morning, late morning, evening, next day all-day', sorted),
+  ];
+}
+
+// Only the write phase is throttled, and never its first or last count, so the
+// page doesn't sit on a stale calendar or stop short of 100%.
+function testProgressReporter() {
+  var written = [];
+  var clock = 0;
+  var report = makeProgressReporter(function (json) { written.push(json); }, function () { return clock; });
+  report('read', 1, 2);
+  clock = 100;
+  report('read', 2, 2);
+  report('mirror', 0, 0);
+  report('write', 0, 10);
+  clock = 500;
+  report('write', 1, 10);
+  clock = 1100;
+  report('write', 2, 10);
+  clock = 1200;
+  report('write', 3, 10);
+  report('write', 10, 10);
+  var phases = written.map(function (json) {
+    var parsed = JSON.parse(json);
+    return parsed.phase + ' ' + parsed.done + '/' + parsed.total;
+  }).join(', ');
+  return [
+    blockResult('progress: reads always, writes at most once a second, and the last write',
+      'read 1/2, read 2/2, mirror 0/0, write 0/10, write 2/10, write 10/10', phases),
+    blockResult('progress: holds only the phase and counts',
+      'done,phase,total', Object.keys(JSON.parse(written[0])).sort().join(',')),
+  ];
+}
+
+function testIsValidProgressToken() {
+  var token = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  return [
+    blockResult('progress token: a page token', true, isValidProgressToken(token)),
+    blockResult('progress token: missing', false, isValidProgressToken(undefined)),
+    blockResult('progress token: empty', false, isValidProgressToken('')),
+    blockResult('progress token: too long', false, isValidProgressToken(new Array(42).join('a'))),
+    blockResult('progress token: punctuation', false, isValidProgressToken('progress:abc')),
+    blockResult('progress token: not a string', false, isValidProgressToken(123)),
   ];
 }

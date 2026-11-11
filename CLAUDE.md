@@ -82,6 +82,8 @@ The first run after a large change (or the first run on an empty mirror) may tak
 - Every run records its result in the `status` property. Failures are recorded, then rethrown.
 - `assertReadyToSync()` refuses to preview or sync with no mirror or no sources. **No sources would give an empty desired state, and the diff would delete the whole mirror.**
 - **A run stops before a mass delete.** A preview is only required once, but a later rule like `.+` can still empty the mirror. `isMassDelete()` is more than half of the mirror and at least `MASS_DELETE_MINIMUM` (10) events. `shouldStopForDeletes()` then stops the run unless a preview showed at least that many deletes. Only **Sync now** passes that approval (`approvedDeletes`), so a scheduled run never carries out a mass delete, and a finished sync clears it. Don't make a scheduled run honour it: viewing a preview isn't agreeing to it.
+- **The page blocks itself while working** (issue #10). `#content` is disabled at once, and a modal `<dialog>` opens after 250 ms so quick saves don't flash it. Escape can't close it.
+- **Preview and Sync now report progress.** The page makes up a token, passes it to `previewSync(token)` / `syncNow(token)`, and polls `getSyncProgress(token)` while the call runs. The run writes `{ phase, done, total }` to `CacheService.getUserCache()` through `makeProgressReporter()`: `read` per calendar, `mirror`, then `write`, throttled to once a second except its first and last count. Counts only. Without a valid token (`isValidProgressToken()`) nothing is written, so a scheduled run reports nothing. `getSyncProgress()` skips `loadSettings()`, which would cost a Calendar API call per poll.
 - `isRunStale()` drives the page's overdue warning. Turning off link sharing makes triggers fail before our code runs, so nothing can be recorded and stored errors aren't enough.
 
 ### Event Handling
@@ -140,6 +142,7 @@ When an event title has multiple instances per week, use time-based filters to e
 - `buildBlockRule()` — that an occurrence block matches only that occurrence, a title block matches every instance, and an empty title is refused. Rules are round-tripped through JSON first, as the store does.
 - `assertSafeMirror()`, `assertReadyToSync()`, `isMirrorMissing()`, `validateLookaheadDays()`, `validateSources()`, `validateMirrorName()` and `findMirrorName()` — the settings safety checks.
 - `isRunStale()`, `summarizePlan()`, `finishRun()`, `describeRunError()` and `tagSourceError()` — the lifecycle's pure logic, including that a rethrown error's message holds no calendar name.
+- `makeProgressReporter()` and `isValidProgressToken()` — which progress gets written, and that it holds counts only.
 - `isMassDelete()`, `shouldStopForDeletes()` and `describeMassDelete()` — the mass delete limits, and that the message holds counts only.
 - `addMirrorItem()` and `buildPlan()` — that a duplicate is deleted and its first copy kept.
 - `parseEventStart()`, `isBlockExpired()`, `describeRemovedRules()` and `comparePageEvents()` — the rest of the store's and page's pure logic.
