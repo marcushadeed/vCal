@@ -73,8 +73,10 @@
     .muted { color: var(--muted); }
     .notice { margin: 12px 0 0; padding: 8px 12px; border-radius: 4px; overflow-wrap: anywhere; }
     .error { background: var(--error-bg); color: var(--error-text); }
-    /* Actions happen far down the page, so the banner follows the scroll. */
-    #error { position: sticky; top: 0; z-index: 1; }
+    /* Actions happen far down the page, so the banners follow the scroll. */
+    #banners { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+    /* Disabled while working, so every control is blocked without a rebuild. */
+    #content { min-width: 0; margin: 0; padding: 0; border: 0; }
     .warning { background: var(--warn-bg); color: var(--warn-text); }
     .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 0; }
     .row .main { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
@@ -99,13 +101,17 @@
     <span class="muted">Changes apply at the next sync</span>
   </header>
 
-  <div id="error" class="notice error" role="alert" hidden></div>
-  <div id="progress" class="notice warning" role="status" hidden>Working. This can take a few minutes.</div>
-  <div id="warnings"></div>
+  <div id="banners">
+    <div id="error" class="notice error" role="alert" hidden></div>
+    <div id="progress" class="notice warning" role="status" hidden>Working. This can take a few minutes.</div>
+  </div>
 
-  <div id="loading" class="muted">Loading...</div>
-  <div id="setup" hidden></div>
-  <div id="main" hidden></div>
+  <fieldset id="content">
+    <div id="warnings"></div>
+    <div id="loading" class="muted">Loading...</div>
+    <div id="setup" hidden></div>
+    <div id="main" hidden></div>
+  </fieldset>
 
   <p class="disclosure">vCal runs on its owner's Apps Script project. The owner can see when your syncs ran, and controls the code that can read and change your calendars. Google's error messages, which the owner can see, may include calendar IDs.</p>
 
@@ -142,6 +148,7 @@
     var loadingEl = document.getElementById('loading');
     var setupEl = document.getElementById('setup');
     var mainEl = document.getElementById('main');
+    var contentEl = document.getElementById('content');
     var eventsEl = null;
     var ruleFormEl = null;
 
@@ -167,9 +174,24 @@
       while (node.firstChild) node.removeChild(node.firstChild);
     }
 
+    // Keeps what's on screen still while `change` resizes the banners or rebuilds
+    // the page (issue #17). Once the user has scrolled into the content, banners
+    // appearing above it mustn't push it down. Document coordinates, so it's right
+    // whether or not the browser's own scroll anchoring already moved.
+    function keepPlace(change) {
+      var scrollY = window.scrollY;
+      var rect = contentEl.getBoundingClientRect();
+      var top = rect.top + scrollY;
+      change();
+      var moved = contentEl.getBoundingClientRect().top + window.scrollY - top;
+      window.scrollTo(0, rect.top < 0 ? scrollY + moved : scrollY);
+    }
+
     function showError(error) {
-      errorEl.textContent = (error && error.message) || String(error);
-      errorEl.hidden = false;
+      keepPlace(function () {
+        errorEl.textContent = (error && error.message) || String(error);
+        errorEl.hidden = false;
+      });
     }
 
     // A 12-hour picker for a stored 24-hour HH:MM value, or '' for none. 24:00 is
@@ -799,10 +821,15 @@
       }
     }
 
+    // Starting only disables the page. Rebuilding it then made it jump.
     function setBusy(value) {
-      busy = value;
-      progressEl.hidden = !working;
-      if (data) render();
+      keepPlace(function () {
+        busy = value;
+        contentEl.disabled = value;
+        if (value) errorEl.hidden = true;
+        progressEl.hidden = !working;
+        if (data && !value) render();
+      });
     }
 
     // Failures show the banner and leave everything as it was.
@@ -832,7 +859,6 @@
     // Every action reloads from the server, so there is only one code path.
     // `onDone` runs only on success, before the reload.
     function act(name, args, onDone) {
-      errorEl.hidden = true;
       setBusy(true);
       callServer(name, args, function (result) {
         previewResult = null;
@@ -842,13 +868,13 @@
     }
 
     // The same, for calls that can take minutes.
+    // The preview stays until the call succeeds, so the page doesn't shrink.
     function runLong(name, onDone) {
-      errorEl.hidden = true;
       working = true;
-      previewResult = null;
       setBusy(true);
       callServer(name, [], function (result) {
         working = false;
+        previewResult = null;
         if (onDone) onDone(result);
         refresh();
       });
