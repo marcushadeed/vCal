@@ -203,7 +203,7 @@ Everything users edit lives on the page, and is stored per user in User Properti
   - `mirrorCalendarId`: Set only by **Create mirror calendar**.
   - `sourceCalendars`: Array of `{ id, name, color? }` objects. `color` is an optional event-colour id (`'1'`-`'11'`) applied to every event mirrored from that calendar, so sources stay distinguishable in the mirror. `validateSources()` refuses an id outside that range, because the API rejects invalid ids outright, which would fail every write in the run.
   - `lookaheadDays`: Number of days to look ahead, from 1 to 365 (default 180), to avoid fetching infinitely recurring events.
-  - `previewed`, `enabled`, `enabledAt`, `frequency`, `approvedDeletes`: The sync lifecycle. `frequency` is `daily`, `every6h` or `hourly`.
+  - `previewed`, `enabled`, `enabledAt`, `frequency`, `approvedDeletes`: The sync lifecycle. `frequency` is `daily`, `every6h`, `hourly` or `every30m`.
 - The `status` property holds JSON: `lastRunAt`, `created`, `updated`, `deleted`, `unchanged`, `deferred` and `error`.
 - The `removedRules` property holds how many unreadable rules were removed since the user last dismissed the page's notice.
 - Rules are in `rule:` properties. See Rule Store. Each has:

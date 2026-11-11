@@ -135,7 +135,7 @@
     var DAY_LABELS = [
       ['SU', 'Sun'], ['MO', 'Mon'], ['TU', 'Tue'], ['WE', 'Wed'], ['TH', 'Thu'], ['FR', 'Fri'], ['SA', 'Sat'],
     ];
-    var FREQUENCY_LABELS = { daily: 'Daily', every6h: 'Every 6 hours', hourly: 'Hourly' };
+    var FREQUENCY_LABELS = { daily: 'Daily', every6h: 'Every 6 hours', hourly: 'Hourly', every30m: 'Every 30 minutes' };
     var MATCH_LABELS = [
       ['exact', 'Exact title'], ['contains', 'Title contains'], ['regex', 'Regex (advanced)'], ['any', 'Any title'],
     ];
@@ -159,6 +159,7 @@
     var lookaheadDraft = null;
     var mirrorNameDraft = null;
     var frequencyDraft = null;
+    var frequencyWarningEl = null;
     var searchQuery = '';
 
     // Kept here and not reloaded. Cleared by anything that could make it out of date.
@@ -612,7 +613,16 @@
       });
       return labelled('How often', dropdown(options, currentFrequency(), function (value) {
         frequencyDraft = value;
+        if (frequencyWarningEl) frequencyWarningEl.hidden = value !== 'every30m';
       }));
+    }
+
+    // Shown below Turn on sync. Only one is on the page at a time.
+    function frequencyWarning() {
+      frequencyWarningEl = el('div', 'notice warning', 'Google gives each personal account 90 minutes of scheduled running time a day. ' +
+        'Syncing every 30 minutes uses that up if a run takes more than about 2 minutes, and syncs then stop until the next day.');
+      frequencyWarningEl.hidden = currentFrequency() !== 'every30m';
+      return frequencyWarningEl;
     }
 
     function turnOnButton() {
@@ -660,6 +670,7 @@
       fields.appendChild(frequencyDropdown());
       setupEl.appendChild(fields);
       setupEl.appendChild(turnOnButton());
+      setupEl.appendChild(frequencyWarning());
     }
 
     // --- After setup -------------------------------------------------------------
@@ -714,6 +725,9 @@
         actions.appendChild(turnOnButton());
       }
       parent.appendChild(actions);
+      if (!settings.enabled) {
+        parent.appendChild(frequencyWarning());
+      }
       renderPreview(parent);
     }
 
