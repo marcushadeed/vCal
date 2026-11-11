@@ -125,6 +125,7 @@
     var sourceDraft = null;
     var sourceDraftDirty = false;
     var lookaheadDraft = null;
+    var mirrorNameDraft = null;
     var frequencyDraft = null;
     var searchQuery = '';
 
@@ -305,10 +306,22 @@
       }));
     }
 
-    function createMirrorButton() {
-      return button('Create mirror calendar', function () {
-        act('createMirrorCalendar', []);
+    // Creating when there's no mirror, renaming when there is. Only one is ever on
+    // the page, so they share a draft.
+    function mirrorNameFields() {
+      var creating = !hasMirror();
+      var fallback = creating ? data.settings.defaultMirrorName : data.settings.mirrorName;
+      var input = textInput(mirrorNameDraft === null ? fallback : mirrorNameDraft, function (value) {
+        mirrorNameDraft = value;
       });
+      var fields = el('div', 'fields');
+      fields.appendChild(labelled('Mirror calendar name', input));
+      fields.appendChild(button(creating ? 'Create mirror calendar' : 'Rename', function () {
+        act(creating ? 'createMirrorCalendar' : 'renameMirrorCalendar', [input.value], function () {
+          mirrorNameDraft = null;
+        });
+      }));
+      return fields;
     }
 
     // --- Rules -------------------------------------------------------------------
@@ -529,9 +542,9 @@
       if (hasMirror()) {
         setupEl.appendChild(el('p', 'muted', 'Your mirror calendar is ready.'));
       } else {
-        setupEl.appendChild(el('p', '', 'vCal copies events into a new calendar of its own. vCal owns that calendar, so anything you add to it by hand gets deleted.'));
-        setupEl.appendChild(createMirrorButton());
+        setupEl.appendChild(el('p', '', 'vCal copies events into a new calendar of its own. vCal owns that calendar, so anything you add to it by hand gets deleted. Give it a name you\'ll recognise, especially if you share it.'));
       }
+      setupEl.appendChild(mirrorNameFields());
 
       setupEl.appendChild(el('h2', '', '2. Pick your source calendars'));
       setupEl.appendChild(el('p', 'muted', 'Tick the calendars to copy from. You can rename each one and choose a colour for its events in the mirror.'));
@@ -616,12 +629,12 @@
 
     function renderCalendars(parent) {
       parent.appendChild(el('h2', '', 'Calendars'));
+      parent.appendChild(el('h3', '', 'Mirror'));
       if (!hasMirror()) {
         parent.appendChild(el('div', 'notice warning', 'Your mirror calendar is missing, so vCal can\'t sync. If you deleted it, create a new one. vCal owns that calendar, so anything you add to it by hand gets deleted.'));
-        var mirrorRow = el('div', 'row');
-        mirrorRow.appendChild(createMirrorButton());
-        parent.appendChild(mirrorRow);
       }
+      parent.appendChild(mirrorNameFields());
+      parent.appendChild(el('h3', '', 'Sources'));
       renderSourcePicker(parent);
 
       var lookahead = lookaheadDraft === null ? String(data.settings.lookaheadDays) : lookaheadDraft;

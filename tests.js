@@ -811,6 +811,17 @@ function testSettingsValidators() {
     throwsResult('sources: a missing id is refused', function () { validateSources([{ name: 'A' }], 'm@x'); }),
     throwsResult('sources: an invalid colour is refused', function () { validateSources([{ id: 'a@x', name: 'A', color: '12' }], 'm@x'); }),
     throwsResult('sources: the mirror is refused', function () { validateSources([{ id: 'm@x', name: 'M' }], 'm@x'); }),
+    blockResult('mirror name: is trimmed', 'Marcus mirror', validateMirrorName('  Marcus mirror ')),
+    throwsResult('mirror name: refuses empty', function () { validateMirrorName(''); }),
+    throwsResult('mirror name: refuses whitespace', function () { validateMirrorName('   '); }),
+    throwsResult('mirror name: refuses a non-string', function () { validateMirrorName(5); }),
+    throwsResult('mirror name: refuses over 100 characters', function () { validateMirrorName(new Array(102).join('x')); }),
+    blockResult('mirror name: accepts 100 characters', 100, validateMirrorName(new Array(101).join('x')).length),
+    blockResult('mirror name: an error does not repeat the name', false, (function () {
+      var name = new Array(102).join('secret');
+      try { validateMirrorName(name); } catch (e) { return e.message.indexOf('secret') !== -1; }
+      return 'no error';
+    })()),
   ];
 }
 
@@ -866,6 +877,9 @@ function testIsMirrorMissing() {
     blockResult('mirror: no mirror set is not missing', false, isMirrorMissing('', calendars)),
     blockResult('mirror: a listed mirror is not missing', false, isMirrorMissing('m@x', calendars)),
     blockResult('mirror: a deleted mirror is missing', true, isMirrorMissing('gone@x', calendars)),
+    blockResult('mirror name: found by id', 'Mine', findMirrorName('m@x', [{ id: 'a@x', name: 'A' }, { id: 'm@x', name: 'Mine' }])),
+    blockResult('mirror name: empty with no mirror set', '', findMirrorName('', [{ id: '', name: 'A' }])),
+    blockResult('mirror name: empty for a deleted mirror', '', findMirrorName('gone@x', calendars)),
   ];
 }
 
