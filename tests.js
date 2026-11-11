@@ -798,6 +798,8 @@ function testIsRunStale() {
     blockResult('stale: every 6 hours at 13.5 hours is stale', true, isRunStale(on('every6h'), { lastRunAt: ago(13.5) }, now)),
     blockResult('stale: hourly at 2.5 hours is fine', false, isRunStale(on('hourly'), { lastRunAt: ago(2.5) }, now)),
     blockResult('stale: hourly at 3.5 hours is stale', true, isRunStale(on('hourly'), { lastRunAt: ago(3.5) }, now)),
+    blockResult('stale: every 30 minutes at 1.5 hours is fine', false, isRunStale(on('every30m'), { lastRunAt: ago(1.5) }, now)),
+    blockResult('stale: every 30 minutes at 2.5 hours is stale', true, isRunStale(on('every30m'), { lastRunAt: ago(2.5) }, now)),
     blockResult('stale: paused is never stale', false,
       isRunStale({ enabled: false, frequency: 'hourly', enabledAt: '' }, { lastRunAt: ago(1000) }, now)),
     // Turning sync back on after a long pause must not warn straight away.

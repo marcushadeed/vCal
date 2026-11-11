@@ -13,7 +13,7 @@ var CONFIG = {
 };
 
 // Hours between scheduled runs, for each frequency the page offers.
-var FREQUENCY_HOURS = { daily: 24, every6h: 6, hourly: 1 };
+var FREQUENCY_HOURS = { daily: 24, every6h: 6, hourly: 1, every30m: 0.5 };
 
 var DEFAULT_MIRROR_NAME = 'vCal mirror';
 var MAX_MIRROR_NAME_LENGTH = 100;

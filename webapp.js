@@ -286,6 +286,8 @@ function turnOnSync(frequency) {
   var builder = ScriptApp.newTrigger('mirrorCalendarSync').timeBased();
   if (frequency === 'daily') {
     builder.everyDays(1);
+  } else if (frequency === 'every30m') {
+    builder.everyMinutes(30);
   } else {
     builder.everyHours(FREQUENCY_HOURS[frequency]);
   }
