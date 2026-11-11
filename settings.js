@@ -15,6 +15,9 @@ var CONFIG = {
 // Hours between scheduled runs, for each frequency the page offers.
 var FREQUENCY_HOURS = { daily: 24, every6h: 6, hourly: 1 };
 
+var DEFAULT_MIRROR_NAME = 'vCal mirror';
+var MAX_MIRROR_NAME_LENGTH = 100;
+
 var SETTINGS_KEY = 'settings';
 var STATUS_KEY = 'status';
 
@@ -73,6 +76,18 @@ function validateLookaheadDays(days) {
     throw new Error('Enter a whole number of days from 1 to 365.');
   }
   return number;
+}
+
+// The mirror's own name, which everyone it's shared with sees. Returns it trimmed.
+function validateMirrorName(name) {
+  var trimmed = typeof name === 'string' ? name.trim() : '';
+  if (trimmed === '') {
+    throw new Error('Enter a name for your mirror calendar.');
+  }
+  if (trimmed.length > MAX_MIRROR_NAME_LENGTH) {
+    throw new Error('Keep the mirror calendar\'s name to ' + MAX_MIRROR_NAME_LENGTH + ' characters or fewer.');
+  }
+  return trimmed;
 }
 
 // Returns cleaned { id, name, color? } entries.

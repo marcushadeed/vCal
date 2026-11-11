@@ -122,7 +122,7 @@ When an event title has multiple instances per week, use time-based filters to e
 12. **The page always receives the stored form**, because a `RegExp` can't pass through `google.script.run`.
 
 ### Calendars
-**Create mirror calendar** is the only way to set a mirror on the page, because the sync deletes everything in the mirror without a sync key. Users can't point it at an existing calendar. `loadSettings()` refuses a mirror that is the primary calendar or is also a source. Sources come from a picker backed by `Calendar.CalendarList.list`, which leaves out the mirror but keeps any stored source that is no longer listed, so it can be removed.
+**Create mirror calendar** is the only way to set a mirror on the page, because the sync deletes everything in the mirror without a sync key. Users can't point it at an existing calendar. Users name it when creating it (`validateMirrorName()`, default `vCal mirror`), and **Rename** patches the calendar's own `summary`, not the per-user `summaryOverride`, so people it's shared with see the new name. `loadSettings()` refuses a mirror that is the primary calendar or is also a source. Sources come from a picker backed by `Calendar.CalendarList.list`, which leaves out the mirror but keeps any stored source that is no longer listed, so it can be removed.
 
 ## Testing
 
@@ -138,7 +138,7 @@ When an event title has multiple instances per week, use time-based filters to e
 - `computeSyncKey()` — stability, and crucially that a shared iCalUID at different start times yields **different** keys. `testIdentityIsPinned()` fixes a timed key, an all-day key and a signature to the values existing mirrors use. If one changes, every mirrored event is rebuilt.
 - `computeSignature()` — that a change to each mirrored field is detected, and that an edit to an unmirrored property is still caught via `lastUpdated`.
 - `buildBlockRule()` — that an occurrence block matches only that occurrence, a title block matches every instance, and an empty title is refused. Rules are round-tripped through JSON first, as the store does.
-- `assertSafeMirror()`, `assertReadyToSync()`, `isMirrorMissing()`, `validateLookaheadDays()` and `validateSources()` — the settings safety checks.
+- `assertSafeMirror()`, `assertReadyToSync()`, `isMirrorMissing()`, `validateLookaheadDays()`, `validateSources()`, `validateMirrorName()` and `findMirrorName()` — the settings safety checks.
 - `isRunStale()`, `summarizePlan()`, `finishRun()`, `describeRunError()` and `tagSourceError()` — the lifecycle's pure logic, including that a rethrown error's message holds no calendar name.
 - `isMassDelete()`, `shouldStopForDeletes()` and `describeMassDelete()` — the mass delete limits, and that the message holds counts only.
 - `addMirrorItem()` and `buildPlan()` — that a duplicate is deleted and its first copy kept.

@@ -12,7 +12,7 @@ vCal gathers your calendars into one mirror calendar, and leaves out the events 
 1. Open the link you were given, and sign in with your Google account.
 2. Google warns that the app isn't verified. Choose **Advanced**, then **Go to vCal**, and allow access. vCal needs to read your calendars, write to its mirror calendar, and schedule its own syncs.
 3. Follow the steps on the page:
-   1. **Create mirror calendar.**
+   1. Name your mirror, and click **Create mirror calendar**. Pick a name you'll recognise, especially if you share it. You can rename it later under **Calendars**.
    2. Tick your source calendars, choose names and colours if you like, and click **Save calendars**.
    3. Add rules for anything you want left out. This is optional, and you can add more later.
    4. Click **Preview** to see what a sync would do. A preview changes nothing.

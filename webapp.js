@@ -27,6 +27,8 @@ function getPageData() {
     settings: {
       mirrorCalendarId: settings.mirrorCalendarId,
       mirrorMissing: isMirrorMissing(settings.mirrorCalendarId, allCalendars),
+      mirrorName: findMirrorName(settings.mirrorCalendarId, allCalendars),
+      defaultMirrorName: DEFAULT_MIRROR_NAME,
       sourceCalendars: settings.sourceCalendars,
       lookaheadDays: settings.lookaheadDays,
       previewed: settings.previewed,
@@ -68,6 +70,16 @@ function isMirrorMissing(mirrorCalendarId, calendars) {
   return Boolean(mirrorCalendarId) && !calendars.some(function (calendar) {
     return calendar.id === mirrorCalendarId;
   });
+}
+
+// `calendars` is the unfiltered list. '' when there's no mirror. Pure.
+function findMirrorName(mirrorCalendarId, calendars) {
+  for (var i = 0; i < calendars.length; i++) {
+    if (mirrorCalendarId && calendars[i].id === mirrorCalendarId) {
+      return calendars[i].name || '';
+    }
+  }
+  return '';
 }
 
 function listPageRules() {
@@ -133,14 +145,26 @@ function toPageEvent(item, sourceName) {
 // The only way to set a mirror, because the sync deletes everything in the mirror
 // that it didn't create. Refusing while the mirror still exists means a double
 // click can't replace it.
-function createMirrorCalendar() {
+function createMirrorCalendar(name) {
   var settings = loadSettings();
+  var summary = validateMirrorName(name);
   if (settings.mirrorCalendarId && !isMirrorMissing(settings.mirrorCalendarId, listUserCalendars())) {
     throw new Error('You already have a mirror calendar.');
   }
-  var calendar = Calendar.Calendars.insert({ summary: 'vCal mirror', timeZone: CONFIG.timeZone });
+  var calendar = Calendar.Calendars.insert({ summary: summary, timeZone: CONFIG.timeZone });
   settings.mirrorCalendarId = calendar.id;
   saveStoredSettings(settings);
+}
+
+// Changes the calendar's own name rather than this user's override of it, so
+// people it's shared with see the new name too.
+function renameMirrorCalendar(name) {
+  var settings = loadSettings();
+  var summary = validateMirrorName(name);
+  if (!settings.mirrorCalendarId || isMirrorMissing(settings.mirrorCalendarId, listUserCalendars())) {
+    throw new Error('Create a mirror calendar first.');
+  }
+  Calendar.Calendars.patch({ summary: summary }, settings.mirrorCalendarId);
 }
 
 function saveSources(sources) {
