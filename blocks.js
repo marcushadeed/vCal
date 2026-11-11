@@ -95,14 +95,15 @@ function parseStoredRule(json) {
 function describeRule(rule) {
   if (isOccurrenceRule(rule)) {
     var name = rule.value.trim() === '' ? '(untitled)' : '"' + rule.value + '"';
-    return name + ' on ' + rule.date.start + ' at ' + rule.time.start;
+    return name + ' on ' + rule.date.start + ' at ' + formatTime12(parseTimeToMinutes(rule.time.start));
   }
   var pieces = [describeRuleTitle(rule)];
   if (rule.days) {
     pieces.push('on ' + rule.days.join(', '));
   }
   if (rule.time) {
-    pieces.push('from ' + rule.time.start + ' to ' + rule.time.end);
+    pieces.push('from ' + formatTime12(parseTimeToMinutes(rule.time.start)) +
+      ' to ' + formatTime12(parseTimeToMinutes(rule.time.end)));
   }
   if (rule.date) {
     pieces.push(rule.date.start === rule.date.end ? rule.date.start : rule.date.start + ' to ' + rule.date.end);
