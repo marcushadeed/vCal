@@ -31,7 +31,7 @@ A rule describes events to **leave out**. An event that matches no rule is copie
 | Regex (advanced) | matches this regular expression |
 | Any title | is anything. Needs a day, time or date limit, because it would otherwise empty your mirror |
 
-Any rule can also be limited to certain days, a time window or a date range. These use your calendar's time zone. A To time of 12:00 AM means midnight at the end of the day.
+Any rule can also be limited to certain days, a time window or a date range. These use your calendar's time zone. A time window looks only at when an event starts: it excludes events starting at or after the From time and before the To time, not every event that overlaps it. All-day events count as starting at 12:00 AM. A To time of 12:00 AM means midnight at the end of the day.
 
 Under **Upcoming**, each event also offers **Block this** for that one occurrence, and **Block all titled this**. Both add to your list of rules.
 

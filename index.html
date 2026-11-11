@@ -533,7 +533,8 @@
         form.dateEnd = value;
       }, 'date')));
       ruleFormEl.appendChild(limitFields);
-      ruleFormEl.appendChild(el('p', 'muted', 'Days, times and dates are optional, and use your calendar\'s time zone (' + data.timeZone + '). A To time of 12:00 AM means midnight at the end of the day.'));
+      ruleFormEl.appendChild(el('p', 'muted', 'Days, times and dates are optional, and use your calendar\'s time zone (' + data.timeZone + ').'));
+      ruleFormEl.appendChild(el('p', 'muted', 'A time limit only looks at when an event starts. It excludes events starting at or after the From time and before the To time, so an event that starts earlier and runs into the window is still mirrored. All-day events count as starting at 12:00 AM. A To time of 12:00 AM means midnight at the end of the day.'));
 
       var actions = el('div', 'row');
       actions.appendChild(button(form.oldKey ? 'Save rule' : 'Add rule', function () {

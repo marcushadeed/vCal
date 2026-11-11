@@ -102,8 +102,8 @@ function describeRule(rule) {
     pieces.push('on ' + rule.days.join(', '));
   }
   if (rule.time) {
-    pieces.push('from ' + formatTime12(parseTimeToMinutes(rule.time.start)) +
-      ' to ' + formatTime12(parseTimeToMinutes(rule.time.end)));
+    pieces.push('starting between ' + formatTime12(parseTimeToMinutes(rule.time.start)) +
+      ' and ' + formatTime12(parseTimeToMinutes(rule.time.end)));
   }
   if (rule.date) {
     pieces.push(rule.date.start === rule.date.end ? rule.date.start : rule.date.start + ' to ' + rule.date.end);
